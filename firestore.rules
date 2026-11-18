@@ -1,0 +1,61 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'sakinayesmin2203@gmail.com' ||
+        request.auth.token.email_verified == true
+      );
+    }
+
+    // Connection test document
+    match /test/{testId} {
+      allow read, write: if true;
+    }
+
+    // YouSnap Admin Dashboard Collections
+    // Allow read and write for the admin panel management features
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /admins/{adminId} {
+      allow read, write: if true;
+    }
+
+    match /videos/{videoId} {
+      allow read, write: if true;
+    }
+
+    match /monetization_requests/{requestId} {
+      allow read, write: if true;
+    }
+
+    match /live_uploads/{uploadId} {
+      allow read, write: if true;
+    }
+
+    match /support_tickets/{ticketId} {
+      allow read, write: if true;
+    }
+
+    match /admin_notifications/{notificationId} {
+      allow read, write: if true;
+    }
+
+    // End-User app targeted notifications
+    match /notifications/{notificationId} {
+      allow read, write: if true;
+    }
+
+    // Default catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

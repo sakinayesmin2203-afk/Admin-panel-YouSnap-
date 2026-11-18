@@ -1,0 +1,142 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "photoURL": { "type": "string", "format": "uri" },
+        "status": { "type": "string", "enum": ["Active", "Suspended", "Banned"] },
+        "suspendReason": { "type": "string" },
+        "uploads": { "type": "integer" },
+        "totalEarnings": { "type": "string" },
+        "followers": { "type": "integer" }
+      },
+      "required": ["uid", "displayName", "email", "status"]
+    },
+    "Video": {
+      "title": "Video",
+      "description": "Video content details",
+      "type": "object",
+      "properties": {
+        "videoId": { "type": "string" },
+        "userId": { "type": "string" },
+        "thumbnailURL": { "type": "string", "format": "uri" },
+        "videoURL": { "type": "string", "format": "uri" },
+        "caption": { "type": "string" },
+        "views": { "type": "integer" },
+        "likes": { "type": "integer" }
+      },
+      "required": ["videoId", "userId", "videoURL"]
+    },
+    "MonetizationRequest": {
+      "title": "MonetizationRequest",
+      "description": "Creator monetization requests",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "followersCount": { "type": "integer" },
+        "totalViews": { "type": "integer" },
+        "earnings": { "type": "number" },
+        "status": { "type": "string", "enum": ["Pending", "Approved", "Rejected"] }
+      },
+      "required": ["userId", "followersCount", "status"]
+    },
+    "LiveUpload": {
+      "title": "LiveUpload",
+      "description": "Real-time moderation upload stream",
+      "type": "object",
+      "properties": {
+        "uploadId": { "type": "string" },
+        "title": { "type": "string" },
+        "uploader": { "type": "string" },
+        "username": { "type": "string" },
+        "avatar": { "type": "string" },
+        "category": { "type": "string" },
+        "thumbnail": { "type": "string" },
+        "duration": { "type": "string" },
+        "status": { "type": "string", "enum": ["Pending", "Warning", "Flagged", "Approved"] },
+        "isViralBoosted": { "type": "boolean" }
+      },
+      "required": ["uploadId", "title", "uploader", "status"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "User grievance and support ticket",
+      "type": "object",
+      "properties": {
+        "ticketId": { "type": "string" },
+        "creatorName": { "type": "string" },
+        "creatorUsername": { "type": "string" },
+        "creatorAvatar": { "type": "string" },
+        "category": { "type": "string" },
+        "subject": { "type": "string" },
+        "message": { "type": "string" },
+        "status": { "type": "string", "enum": ["Open", "In Progress", "Resolved"] }
+      },
+      "required": ["ticketId", "creatorName", "subject", "message", "status"]
+    },
+    "AdminNotification": {
+      "title": "AdminNotification",
+      "description": "System event notification for administrators",
+      "type": "object",
+      "properties": {
+        "notificationId": { "type": "string" },
+        "type": { "type": "string", "enum": ["Uploads", "Reports", "Monetization", "Security"] },
+        "message": { "type": "string" },
+        "targetUser": { "type": "string" },
+        "targetUsername": { "type": "string" },
+        "targetAvatar": { "type": "string" },
+        "unread": { "type": "boolean" },
+        "linkTo": { "type": "string" }
+      },
+      "required": ["notificationId", "type", "message", "unread"]
+    },
+    "UserNotification": {
+      "title": "UserNotification",
+      "description": "Targeted push notification for mobile end-users",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["userId", "title", "message"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "User profiles collection"
+    },
+    "/videos/{videoId}": {
+      "schema": { "$ref": "Video" },
+      "description": "Videos collection"
+    },
+    "/monetization_requests/{requestId}": {
+      "schema": { "$ref": "MonetizationRequest" },
+      "description": "Monetization requests collection"
+    },
+    "/live_uploads/{uploadId}": {
+      "schema": { "$ref": "LiveUpload" },
+      "description": "Real-time uploads stream collection"
+    },
+    "/support_tickets/{ticketId}": {
+      "schema": { "$ref": "SupportTicket" },
+      "description": "Support tickets and grievance collection"
+    },
+    "/admin_notifications/{notificationId}": {
+      "schema": { "$ref": "AdminNotification" },
+      "description": "Admin notification alerts collection"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "UserNotification" },
+      "description": "End-user targeted notifications collection"
+    }
+  }
+}

@@ -1,0 +1,423 @@
+import React, { useState, useEffect } from 'react';
+import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { 
+  collection, 
+  onSnapshot, 
+  query, 
+  doc, 
+  deleteDoc, 
+  updateDoc, 
+  setDoc,
+  serverTimestamp
+} from 'firebase/firestore';
+import { 
+  Headphones, 
+  CheckCircle2, 
+  AlertTriangle, 
+  Search, 
+  RefreshCw, 
+  Check, 
+  Trash2, 
+  Filter,
+  ArrowRight
+} from 'lucide-react';
+import UserDetailsModal from './UserDetailsModal';
+
+export default function FirestoreSupport() {
+  const [tickets, setTickets] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [categoryFilter, setCategoryFilter] = useState('All');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [selectedUserForModal, setSelectedUserForModal] = useState<any | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    const path = 'support_tickets';
+    const q = query(collection(db, path));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const data = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        }));
+        setTickets(data);
+        setLoading(false);
+        setError(null);
+      },
+      (err) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.toLowerCase().includes('permission') || msg.toLowerCase().includes('insufficient')) {
+          setTickets([]);
+          setError('Collection "/support_tickets" is not yet enabled in your YouSnap Firestore Rules. Add admin read/write rule for support_tickets to view tickets here.');
+        } else {
+          const errInfo = handleFirestoreError(err, OperationType.GET, path);
+          setError(errInfo.error || 'Failed to load support tickets from Firestore');
+        }
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // Update Status in Firestore (Resolve)
+  const handleResolveTicket = async (ticket: any) => {
+    try {
+      await updateDoc(doc(db, 'support_tickets', ticket.id), {
+        status: 'Resolved',
+        updatedAt: serverTimestamp()
+      });
+
+      // Dispatch notification to user (optional if notifications rules exist)
+      const targetUserId = ticket.userId || ticket.reporterUserId || ticket.creatorUsername || 'user_general';
+      const notifId = `notif_${Date.now()}`;
+      try {
+        await setDoc(doc(db, 'notifications', notifId), {
+          userId: targetUserId,
+          title: 'Support Ticket Resolved',
+          message: 'Your support ticket has been reviewed and resolved by admin.',
+          createdAt: serverTimestamp(),
+          read: false
+        });
+      } catch {
+        // ignore if notifications rules are not added yet
+      }
+
+      showToast(`Ticket ${ticket.ticketId || ticket.id} marked as Resolved! User notified.`);
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.UPDATE, `support_tickets/${ticket.id}`);
+      showToast('Error updating ticket status');
+    }
+  };
+
+  // Delete Ticket
+  const handleDeleteTicket = async (ticketId: string) => {
+    if (!window.confirm('Delete this support ticket from Firestore?')) return;
+    try {
+      await deleteDoc(doc(db, 'support_tickets', ticketId));
+      showToast('Ticket deleted successfully');
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.DELETE, `support_tickets/${ticketId}`);
+      showToast('Failed to delete ticket');
+    }
+  };
+
+  const categoryTabs = [
+    { label: 'All', value: 'All' },
+    { label: 'Suspension Appeals', value: 'Suspension Appeal' },
+    { label: 'Reports & Violations', value: 'Reports & Violations' },
+    { label: 'Monetization Issues', value: 'Monetization Issues' },
+    { label: 'General', value: 'General & App Bugs' }
+  ];
+
+  const filtered = tickets.filter(t => {
+    const matchesSearch = 
+      (t.creatorName || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (t.subject || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (t.ticketId || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (t.message || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (t.reportedName || '').toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus = statusFilter === 'All' || t.status === statusFilter;
+    const matchesCategory = categoryFilter === 'All' || 
+      (t.category || '').toLowerCase() === categoryFilter.toLowerCase() || 
+      (categoryFilter === 'Monetization Issues' && (t.category === 'Payout Inquiry' || t.category === 'Monetization Issues')) ||
+      (categoryFilter === 'General & App Bugs' && (t.category === 'General' || t.category === 'App Bug' || t.category === 'General & App Bugs'));
+    return matchesSearch && matchesStatus && matchesCategory;
+  });
+
+  return (
+    <div className="space-y-6">
+      {/* Header - Cleaned up: No black banner and NO Seed Sample Tickets button at top right */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
+            <Headphones className="text-emerald-600" /> Support & Grievance Hub
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Real-time appeals and creator tickets listening on Cloud Firestore <code className="text-emerald-600 font-bold">/support_tickets</code>
+          </p>
+        </div>
+      </div>
+
+      {/* Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+          <p className="text-xs font-bold text-slate-400 uppercase">Total Tickets</p>
+          <p className="text-2xl font-black text-slate-900 mt-1">{tickets.length}</p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+          <p className="text-xs font-bold text-amber-500 uppercase">Open / Pending</p>
+          <p className="text-2xl font-black text-amber-600 mt-1">
+            {tickets.filter(t => t.status === 'Open' || t.status === 'Pending').length}
+          </p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+          <p className="text-xs font-bold text-sky-500 uppercase">In Progress</p>
+          <p className="text-2xl font-black text-sky-600 mt-1">
+            {tickets.filter(t => t.status === 'In Progress').length}
+          </p>
+        </div>
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+          <p className="text-xs font-bold text-emerald-500 uppercase">Resolved</p>
+          <p className="text-2xl font-black text-emerald-600 mt-1">
+            {tickets.filter(t => t.status === 'Resolved').length}
+          </p>
+        </div>
+      </div>
+
+      {/* Category Filter Tabs */}
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
+            <Filter size={13} className="text-emerald-600" /> Filter by Status & Category:
+          </p>
+          <div className="flex items-center gap-2">
+            {['All', 'Open', 'In Progress', 'Resolved'].map(st => (
+              <button
+                key={st}
+                onClick={() => setStatusFilter(st)}
+                className={`px-3 py-1 rounded-xl text-[11px] font-bold transition ${
+                  statusFilter === st 
+                    ? 'bg-slate-900 text-white shadow-2xs' 
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
+              >
+                {st}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100">
+          {categoryTabs.map(cat => (
+            <button
+              key={cat.value}
+              onClick={() => setCategoryFilter(cat.value)}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition ${
+                categoryFilter === cat.value
+                  ? 'bg-emerald-600 text-white shadow-xs'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+              }`}
+            >
+              {cat.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Search Input */}
+      <div className="bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+        <div className="relative">
+          <Search className="absolute left-3.5 top-3 text-slate-400" size={15} />
+          <input 
+            type="text" 
+            placeholder="Search tickets by creator, reported user, subject, or message..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 outline-none focus:ring-2 focus:ring-emerald-500 transition"
+          />
+        </div>
+      </div>
+
+      {error && (
+        <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-700 flex items-center gap-2">
+          <AlertTriangle size={16} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Tickets List */}
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
+        {loading ? (
+          <div className="p-12 text-center">
+            <RefreshCw className="animate-spin mx-auto text-emerald-500 mb-2" size={24} />
+            <p className="text-xs font-bold text-slate-600">Connecting to Firestore support tickets...</p>
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="p-16 text-center">
+            <Headphones className="mx-auto text-slate-300 mb-3" size={40} />
+            <h3 className="text-sm font-bold text-slate-700">No Support Tickets Found</h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+              There are currently no tickets matching your filter in Firestore <code className="text-emerald-600">/support_tickets</code>.
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {filtered.map(ticket => {
+              const isReport = ticket.category === 'Reports & Violations';
+              const reporterObj = {
+                id: ticket.reporterUserId || ticket.userId || 'unknown',
+                displayName: ticket.reporterName || ticket.creatorName || 'User',
+                username: ticket.reporterUsername || ticket.creatorUsername || 'user',
+                avatar: ticket.reporterAvatar || ticket.creatorAvatar || '',
+                status: 'Active',
+                totalVideos: 0,
+                totalEarnings: '₹0',
+                followers: 0,
+                createdAt: 'N/A'
+              };
+
+              const reportedObj = {
+                id: ticket.reportedUserId || 'unknown',
+                displayName: ticket.reportedName || 'Reported Entity',
+                username: ticket.reportedUsername || 'reported_user',
+                avatar: ticket.reportedAvatar || '',
+                status: 'Suspended',
+                totalVideos: 0,
+                totalEarnings: '₹0',
+                followers: 0,
+                createdAt: 'N/A'
+              };
+
+              return (
+                <div key={ticket.id} className="p-5 hover:bg-slate-50/60 transition space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    {isReport ? (
+                      <div className="flex flex-wrap items-center gap-4">
+                        {/* Reporter Profile */}
+                        <div 
+                          onClick={() => setSelectedUserForModal(reporterObj)}
+                          className="flex items-center gap-2.5 cursor-pointer group bg-slate-50 p-2 rounded-xl border border-slate-200 hover:border-emerald-500 transition"
+                        >
+                          <img 
+                            src={reporterObj.avatar} 
+                            alt="" 
+                            className="w-8 h-8 rounded-lg object-cover shadow-2xs" 
+                          />
+                          <div>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Reporter</p>
+                            <p className="font-bold text-slate-900 group-hover:text-emerald-600 transition text-xs">
+                              {reporterObj.displayName} <span className="font-mono text-[10px] text-slate-400">@{reporterObj.username}</span>
+                            </p>
+                          </div>
+                        </div>
+
+                        <ArrowRight size={14} className="text-slate-400 shrink-0" />
+
+                        {/* Reported User Profile */}
+                        <div 
+                          onClick={() => setSelectedUserForModal(reportedObj)}
+                          className="flex items-center gap-2.5 cursor-pointer group bg-rose-50/60 p-2 rounded-xl border border-rose-200 hover:border-rose-500 transition"
+                        >
+                          <img 
+                            src={reportedObj.avatar} 
+                            alt="" 
+                            className="w-8 h-8 rounded-lg object-cover shadow-2xs" 
+                          />
+                          <div>
+                            <p className="text-[10px] font-bold text-rose-500 uppercase">Reported ID / Content</p>
+                            <p className="font-bold text-slate-900 group-hover:text-rose-600 transition text-xs">
+                              {reportedObj.displayName} <span className="font-mono text-[10px] text-rose-600">@{reportedObj.username}</span>
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-3">
+                        <div 
+                          onClick={() => setSelectedUserForModal(reporterObj)}
+                          className="flex items-center gap-3 cursor-pointer group"
+                        >
+                          <img 
+                            src={reporterObj.avatar} 
+                            alt={reporterObj.displayName} 
+                            className="w-10 h-10 rounded-xl object-cover border border-slate-200 group-hover:border-emerald-500 transition shadow-2xs shrink-0" 
+                          />
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-slate-900 group-hover:text-emerald-600 transition text-sm">
+                                {reporterObj.displayName}
+                              </span>
+                              <span className="text-xs text-slate-400 font-mono">
+                                @{reporterObj.username}
+                              </span>
+                            </div>
+                            <span className="inline-block mt-0.5 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                              {ticket.category || 'General Support'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold ${
+                        ticket.status === 'Resolved' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                        ticket.status === 'In Progress' ? 'bg-sky-50 text-sky-700 border border-sky-200' :
+                        'bg-amber-50 text-amber-700 border border-amber-200'
+                      }`}>
+                        {ticket.status}
+                      </span>
+
+                      <button
+                        onClick={() => handleResolveTicket(ticket)}
+                        disabled={ticket.status === 'Resolved'}
+                        className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-xl text-xs font-bold transition shadow-2xs flex items-center gap-1"
+                        title="Mark as Resolved"
+                      >
+                        <Check size={13} /> Resolve
+                      </button>
+
+                      <button
+                        onClick={() => handleDeleteTicket(ticket.id)}
+                        className="p-1.5 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-xl transition"
+                        title="Delete Ticket"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200/80 space-y-1">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold text-slate-900">{ticket.subject}</h4>
+                      <span className="text-[10px] text-slate-400 font-mono">{ticket.ticketId || ticket.id}</span>
+                    </div>
+                    <p className="text-xs text-slate-600 leading-relaxed font-medium">
+                      {ticket.message}
+                    </p>
+                  </div>
+
+                  {ticket.adminReply && (
+                    <div className="bg-emerald-50/70 p-3 rounded-2xl border border-emerald-200/60 flex items-start gap-2.5 text-xs">
+                      <CheckCircle2 size={16} className="text-emerald-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-[10px] font-bold text-emerald-800 uppercase tracking-wider">Admin Resolution Response:</p>
+                        <p className="text-slate-800 font-semibold mt-0.5">{ticket.adminReply}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* User Details Modal */}
+      <UserDetailsModal 
+        user={selectedUserForModal}
+        isOpen={Boolean(selectedUserForModal)}
+        onClose={() => setSelectedUserForModal(null)}
+        showToast={showToast}
+      />
+
+      {toastMessage && (
+        <div className="fixed bottom-6 left-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 text-xs border border-emerald-500/30 animate-in fade-in slide-in-from-bottom-2">
+          <CheckCircle2 size={16} className="text-emerald-400" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,6 @@
+{
+  "name": "YouSnap Admin Dashboard",
+  "description": "A modern, clean admin dashboard for managing YouSnap platform content.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
