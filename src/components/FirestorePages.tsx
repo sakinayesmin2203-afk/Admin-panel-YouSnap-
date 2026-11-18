@@ -164,6 +164,23 @@ export const UsersPage = () => {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
+  const handleDeleteUser = async (e: React.MouseEvent, user: any) => {
+    e.stopPropagation();
+    const docId = user.docId || user.id;
+    const label = user.displayName || user.email || docId;
+    if (!window.confirm(`Delete "${label}" from Firestore /users and remove from Admin Panel?`)) return;
+    try {
+      await deleteDoc(doc(db, 'users', docId));
+      if (selectedUser && (selectedUser.docId || selectedUser.id) === docId) {
+        setSelectedUser(null);
+      }
+      showToast(`User "${label}" removed from Admin Panel & Firestore.`);
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.DELETE, `users/${docId}`);
+      showToast('Permission denied — ensure `allow delete: if isAdmin();` is published in Firestore Rules.');
+    }
+  };
+
   useEffect(() => {
     setLoading(true);
     const path = 'users';
@@ -356,10 +373,19 @@ export const UsersPage = () => {
                       </span>
                     </td>
                     <td className="py-4 px-6 text-right">
-                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 group-hover:text-emerald-700 py-1 px-2.5 rounded-lg bg-emerald-50/70 group-hover:bg-emerald-100/70 border border-emerald-200/50 transition">
-                        <span>View Details</span>
-                        <ArrowUpRight size={13} />
-                      </span>
+                      <div className="inline-flex items-center gap-2 justify-end">
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 group-hover:text-emerald-700 py-1 px-2.5 rounded-lg bg-emerald-50/70 group-hover:bg-emerald-100/70 border border-emerald-200/50 transition">
+                          <span>View Details</span>
+                          <ArrowUpRight size={13} />
+                        </span>
+                        <button
+                          onClick={(e) => handleDeleteUser(e, user)}
+                          className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200/60 transition"
+                          title="Delete User from Firestore"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

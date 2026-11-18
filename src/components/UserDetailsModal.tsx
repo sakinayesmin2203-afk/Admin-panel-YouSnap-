@@ -8,8 +8,8 @@ import {
   serverTimestamp, 
   onSnapshot,
   query,
-  where,
-  deleteDoc
+  deleteDoc,
+  getDocs
 } from 'firebase/firestore';
 import { 
   X, 
@@ -66,6 +66,9 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
   const [mediaLoading, setMediaLoading] = useState(true);
   const [selectedMedia, setSelectedMedia] = useState<any | null>(null);
 
+  const [showDeleteUserModal, setShowDeleteUserModal] = useState(false);
+  const [deleteUserMediaAlso, setDeleteUserMediaAlso] = useState(true);
+
   const userDocId = user?.docId || user?.id;
 
   // Live real-time listener on this user document in Firestore
@@ -78,6 +81,9 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
       (docSnap) => {
         if (docSnap.exists()) {
           setCurrentUserData(normalizeUserDoc(docSnap));
+        } else {
+          showToast('User account deleted from Firestore.');
+          onClose();
         }
       },
       (err) => handleFirestoreError(err, OperationType.GET, `users/${userDocId}`)
@@ -144,14 +150,23 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
     setIsSubmitting(true);
     try {
       const targetStatus = actionType === 'Ban' ? 'Banned' : 'Suspended';
+      const isBan = targetStatus === 'Banned';
       const reasonText = customReason.trim();
       const targetUserId = currentUserData.uid || userDocId;
 
-      // 1. Update status in Firestore users collection
+      // 1. Update status and standard restriction flags in Firestore users collection
       await updateDoc(doc(db, 'users', userDocId), {
         status: targetStatus,
+        accountStatus: targetStatus,
+        isSuspended: !isBan,
+        isBanned: isBan,
+        isRestricted: true,
         suspendReason: reasonText,
-        suspendedAt: serverTimestamp(),
+        suspensionReason: !isBan ? reasonText : null,
+        banReason: isBan ? reasonText : null,
+        restrictionReason: reasonText,
+        suspendedAt: !isBan ? serverTimestamp() : null,
+        bannedAt: isBan ? serverTimestamp() : null,
         updatedAt: serverTimestamp()
       });
 
@@ -159,11 +174,15 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
       try {
         await addDoc(collection(db, 'notifications'), {
           userId: targetUserId,
-          title: targetStatus === 'Banned' ? 'Account Banned' : 'Account Suspended',
+          userDocId,
+          recipientId: targetUserId,
+          title: isBan ? 'Account Banned' : 'Account Suspended',
           message: `Reason: ${reasonText}`,
+          reason: reasonText,
+          status: targetStatus,
           createdAt: serverTimestamp(),
           read: false,
-          type: targetStatus === 'Banned' ? 'account_banned' : 'account_suspended'
+          type: isBan ? 'account_banned' : 'account_suspended'
         });
       } catch {
         // ignore if notifications rules are not published yet
@@ -176,7 +195,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
         id: `NTF-USR-${Date.now()}`,
         userId: targetUserId,
         username: currentUserData.username || currentUserData.displayName,
-        title: targetStatus === 'Banned' ? 'Account Banned' : 'Account Suspended',
+        title: isBan ? 'Account Banned' : 'Account Suspended',
         message: `Reason: ${reasonText}`,
         createdAt: new Date().toISOString(),
         timestamp: 'Just now',
@@ -187,7 +206,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
 
       setShowReasonModal(false);
       setCustomReason('');
-      showToast(`User account is now ${targetStatus}.`);
+      showToast(`User account is now ${targetStatus} in Firestore.`);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.UPDATE, `users/${userDocId}`);
       showToast('Permission denied in Firestore Rules — publish Admin rules in Firebase Console.');
@@ -203,14 +222,26 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
 
       await updateDoc(doc(db, 'users', userDocId), {
         status: 'Active',
+        accountStatus: 'Active',
+        isSuspended: false,
+        isBanned: false,
+        isRestricted: false,
         suspendReason: '',
+        suspensionReason: null,
+        banReason: null,
+        restrictionReason: null,
+        suspendedAt: null,
+        bannedAt: null,
         unbannedAt: serverTimestamp(),
+        reactivatedAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
 
       try {
         await addDoc(collection(db, 'notifications'), {
           userId: targetUserId,
+          userDocId,
+          recipientId: targetUserId,
           title: 'Account Restored',
           message: 'Reason: Your account has been reviewed and reactivated. You now have full access to YouSnap.',
           createdAt: serverTimestamp(),
@@ -256,6 +287,38 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${col}/${docId}`);
       showToast('Failed to delete media — check Firestore Rules.');
+    }
+  };
+
+  const handleConfirmDeleteUser = async () => {
+    if (!userDocId) return;
+    setIsSubmitting(true);
+    try {
+      if (deleteUserMediaAlso) {
+        for (const colName of MEDIA_COLLECTIONS) {
+          try {
+            const snap = await getDocs(collection(db, colName));
+            const matching = snap.docs
+              .map((d) => normalizeMediaDoc(d, colName))
+              .filter((m) => doesMediaBelongToUser(m, currentUserData));
+            await Promise.all(
+              matching.map((m) => deleteDoc(doc(db, colName, m.docId)).catch(() => {}))
+            );
+          } catch {
+            // ignore inaccessible optional collections
+          }
+        }
+      }
+
+      await deleteDoc(doc(db, 'users', userDocId));
+      setShowDeleteUserModal(false);
+      showToast(`User "${currentUserData.displayName || currentUserData.email || userDocId}" deleted from Firestore!`);
+      onClose();
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.DELETE, `users/${userDocId}`);
+      showToast('Permission denied — ensure `allow delete: if isAdmin();` is published on /users in Firestore Rules.');
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -548,6 +611,14 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
               )}
 
               <button
+                onClick={() => setShowDeleteUserModal(true)}
+                className="px-5 py-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-extrabold rounded-xl text-xs transition active:scale-95 flex items-center gap-2"
+              >
+                <Trash2 size={16} />
+                <span>Delete User (একাউণ্ট ডিলিট কৰক)</span>
+              </button>
+
+              <button
                 onClick={onClose}
                 className="px-4 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition ml-auto"
               >
@@ -696,6 +767,54 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
               </div>
             </form>
 
+          </div>
+        </div>
+      )}
+
+      {/* Delete User Confirmation Modal */}
+      {showDeleteUserModal && (
+        <div className="fixed inset-0 z-[130] bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in duration-150 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 border border-rose-100 flex items-center justify-center mx-auto">
+              <Trash2 size={22} />
+            </div>
+
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-black text-slate-900">Delete User from Firestore?</h3>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                This permanently removes <span className="font-bold text-slate-800">{currentUserData.displayName}</span> (<span className="font-mono">{currentUserData.email || userDocId}</span>) from the Admin Panel and Firestore <code className="text-rose-600 font-bold">/users</code>.
+              </p>
+            </div>
+
+            <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={deleteUserMediaAlso}
+                onChange={(e) => setDeleteUserMediaAlso(e.target.checked)}
+                className="mt-0.5 rounded border-slate-300 text-rose-600 focus:ring-rose-500"
+              />
+              <span>Also delete all posts, reels, stories, and videos uploaded by this user.</span>
+            </label>
+
+            <div className="flex items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowDeleteUserModal(false)}
+                disabled={isSubmitting}
+                className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteUser}
+                disabled={isSubmitting}
+                className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-extrabold rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+              >
+                {isSubmitting ? <RefreshCw className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                <span>Delete User</span>
+              </button>
+            </div>
           </div>
         </div>
       )}

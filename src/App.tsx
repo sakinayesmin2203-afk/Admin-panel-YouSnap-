@@ -13,10 +13,10 @@ import FirestoreRestrictedAccounts from './components/FirestoreRestrictedAccount
 import FirestoreSupport from './components/FirestoreSupport';
 import FirestoreNotifications from './components/FirestoreNotifications';
 import { initFirestoreSeedIfNeeded } from './lib/firestoreSeeder';
-import { db, auth, signOut, onAuthStateChanged, handleFirestoreError, OperationType } from '../lib/firebase';
+import { db, auth, signOut, onAuthStateChanged } from '../lib/firebase';
 import { collection, onSnapshot, query } from 'firebase/firestore';
 import { AlertTriangle, CheckCircle2, Trash2, Send } from 'lucide-react';
-import AdminLogin, { isAccidentalTestUser } from './components/AdminLogin';
+import AdminLogin from './components/AdminLogin';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
@@ -37,25 +37,13 @@ export default function App() {
   useEffect(() => {
     initFirestoreSeedIfNeeded();
 
-    const unsubAuth = onAuthStateChanged(auth, async (user) => {
-      if (user && await isAccidentalTestUser(user)) {
-        try {
-          await user.delete();
-        } catch {
-          await signOut(auth);
-        }
-        setIsAuthenticated(false);
-        localStorage.removeItem('yousnap_admin_auth');
-        localStorage.removeItem('yousnap_admin_email');
-        setAuthChecking(false);
-        return;
-      }
-
-      if (user && user.email) {
+    const unsubAuth = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        const identifier = user.email || user.uid;
         setIsAuthenticated(true);
-        setAdminEmail(user.email);
+        setAdminEmail(identifier);
         localStorage.setItem('yousnap_admin_auth', 'true');
-        localStorage.setItem('yousnap_admin_email', user.email);
+        localStorage.setItem('yousnap_admin_email', identifier);
       } else {
         setIsAuthenticated(false);
         localStorage.removeItem('yousnap_admin_auth');

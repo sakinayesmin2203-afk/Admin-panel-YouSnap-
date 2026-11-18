@@ -121,9 +121,18 @@ export default function FirestoreRestrictedAccounts() {
     try {
       await updateDoc(doc(db, 'users', uid), {
         status: 'Active',
+        accountStatus: 'Active',
+        isSuspended: false,
+        isBanned: false,
+        isRestricted: false,
+        suspendReason: '',
         suspensionReason: null,
         banReason: null,
-        reactivatedAt: serverTimestamp()
+        restrictionReason: null,
+        suspendedAt: null,
+        bannedAt: null,
+        reactivatedAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
 
       // Notify User (optional if notifications rules exist)
