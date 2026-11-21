@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
+import { deleteMediaFromFirestore, restrictMediaInFirestore } from '../lib/firestoreAdapters';
 import { 
   doc, 
   updateDoc, 
-  deleteDoc, 
   collection, 
   addDoc, 
   serverTimestamp 
@@ -39,6 +39,7 @@ export default function VideoPreviewModal({
   onVideoDeleted 
 }: VideoPreviewModalProps) {
   const [showReasonModal, setShowReasonModal] = useState(false);
+  const [actionScope, setActionScope] = useState<'Account' | 'Media'>('Account');
   const [actionType, setActionType] = useState<'Suspend' | 'Ban'>('Suspend');
   const [customReason, setCustomReason] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
@@ -67,37 +68,22 @@ export default function VideoPreviewModal({
     if (!window.confirm(`Are you sure you want to block and delete "${caption}"?`)) return;
     setIsDeleting(true);
     try {
-      const collectionsToTry = Array.from(new Set([sourceCollection, 'posts', 'reels', 'stories', 'videos', 'live_uploads']));
-      let deleted = false;
-      for (const colName of collectionsToTry) {
-        try {
-          await deleteDoc(doc(db, colName, videoId));
-          deleted = true;
-          if (colName === sourceCollection) break;
-        } catch {
-          // ignore if not in this collection or permission denied
-        }
-      }
-
-      if (!deleted) {
-        showToast('Could not delete media — check Firestore Rules permissions for Admin.');
-        return;
-      }
-
-      showToast('Media blocked and deleted successfully from Firestore.');
-      if (onVideoDeleted) onVideoDeleted(videoId);
+      const { col, docId } = await deleteMediaFromFirestore(db, video);
+      showToast(`Media deleted successfully from Firestore /${col}`);
+      if (onVideoDeleted) onVideoDeleted(docId);
       onClose();
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${sourceCollection}/${videoId}`);
-      showToast('Failed to delete media from Firestore');
+      showToast('Failed to delete media — check Firestore Rules permissions for Admin.');
     } finally {
       setIsDeleting(false);
     }
   };
 
-  // Handle Account Suspend / Ban action with custom reason and targeted notification
-  const handleOpenReason = (type: 'Suspend' | 'Ban') => {
+  // Handle Account OR Media Suspend / Ban action with custom reason
+  const handleOpenReason = (type: 'Suspend' | 'Ban', scope: 'Account' | 'Media' = 'Account') => {
     setActionType(type);
+    setActionScope(scope);
     setCustomReason('');
     setShowReasonModal(true);
   };
@@ -111,15 +97,35 @@ export default function VideoPreviewModal({
 
     setIsRestricting(true);
     try {
-      const statusValue = actionType === 'Ban' ? 'Banned' : 'Suspended';
       const reasonText = customReason.trim();
+
+      if (actionScope === 'Media') {
+        const { docId, statusValue } = await restrictMediaInFirestore(db, video, actionType, reasonText);
+        setShowReasonModal(false);
+        setCustomReason('');
+        showToast(`${isPhoto ? 'Photo' : 'Video'} ${statusValue} & moved to Restricted Accounts.`);
+        if (onVideoDeleted) onVideoDeleted(docId);
+        onClose();
+        return;
+      }
+
+      const statusValue = actionType === 'Ban' ? 'Banned' : 'Suspended';
+      const isBan = statusValue === 'Banned';
 
       // 1. Update user in Firestore users collection
       try {
         await updateDoc(doc(db, 'users', targetUserId), {
           status: statusValue,
+          accountStatus: statusValue,
+          isSuspended: !isBan,
+          isBanned: isBan,
+          isRestricted: true,
           suspendReason: reasonText,
-          suspendedAt: serverTimestamp(),
+          suspensionReason: !isBan ? reasonText : null,
+          banReason: isBan ? reasonText : null,
+          restrictionReason: reasonText,
+          suspendedAt: !isBan ? serverTimestamp() : null,
+          bannedAt: isBan ? serverTimestamp() : null,
           updatedAt: serverTimestamp()
         });
       } catch (err) {
@@ -158,9 +164,13 @@ export default function VideoPreviewModal({
 
       setShowReasonModal(false);
       setCustomReason('');
-      showToast(`User @${username} account is now ${statusValue}.`);
+      showToast(`User @${username} account is now ${statusValue} (in Restricted Accounts).`);
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.UPDATE, `users/${targetUserId}`);
+      handleFirestoreError(
+        err,
+        OperationType.UPDATE,
+        actionScope === 'Media' ? `${sourceCollection}/${videoId}` : `users/${targetUserId}`
+      );
       showToast('Failed to update restriction — check Firestore Rules.');
       setShowReasonModal(false);
     } finally {
@@ -263,41 +273,61 @@ export default function VideoPreviewModal({
             </div>
           </div>
 
-          {/* ACTION BUTTONS: Block/Delete Video, Suspend Account, Ban Account */}
-          <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
-              {/* Block/Delete Video Button */}
+          {/* ACTION BUTTONS: Suspend/Ban Media, Delete Media, Suspend/Ban Account */}
+          <div className="pt-3 border-t border-slate-100 space-y-2.5">
+            <div className="flex flex-wrap items-center gap-2 w-full">
+              {/* Suspend Media Button */}
+              <button
+                onClick={() => handleOpenReason('Suspend', 'Media')}
+                className="px-3.5 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 font-bold rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+              >
+                <AlertTriangle size={14} /> Suspend {isPhoto ? 'Photo' : 'Video'}
+              </button>
+
+              {/* Ban Media Button */}
+              <button
+                onClick={() => handleOpenReason('Ban', 'Media')}
+                className="px-3.5 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-bold rounded-xl text-xs transition flex items-center justify-center gap-1.5"
+              >
+                <Ban size={14} /> Ban {isPhoto ? 'Photo' : 'Video'}
+              </button>
+
+              {/* Delete Video Button */}
               <button 
                 onClick={handleDeleteVideo}
                 disabled={isDeleting}
-                className="flex-1 sm:flex-none px-4 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95 disabled:opacity-50"
+                className="px-3.5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95 disabled:opacity-50"
               >
-                <Trash2 size={15} /> {isDeleting ? 'Blocking...' : 'Block / Delete Video'}
-              </button>
-
-              {/* Suspend Account Button */}
-              <button 
-                onClick={() => handleOpenReason('Suspend')}
-                className="flex-1 sm:flex-none px-4 py-3 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95"
-              >
-                <AlertTriangle size={15} /> Suspend Account
-              </button>
-
-              {/* Ban Account Button */}
-              <button 
-                onClick={() => handleOpenReason('Ban')}
-                className="flex-1 sm:flex-none px-4 py-3 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95"
-              >
-                <Ban size={15} /> Ban Account
+                <Trash2 size={14} /> {isDeleting ? 'Deleting...' : `Delete ${isPhoto ? 'Photo' : 'Video'}`}
               </button>
             </div>
 
-            <button 
-              onClick={onClose}
-              className="w-full sm:w-auto px-5 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition"
-            >
-              Close
-            </button>
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                {/* Suspend Account Button */}
+                <button 
+                  onClick={() => handleOpenReason('Suspend', 'Account')}
+                  className="flex-1 sm:flex-none px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95"
+                >
+                  <AlertTriangle size={14} /> Suspend Account
+                </button>
+
+                {/* Ban Account Button */}
+                <button 
+                  onClick={() => handleOpenReason('Ban', 'Account')}
+                  className="flex-1 sm:flex-none px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95"
+                >
+                  <Ban size={14} /> Ban Account
+                </button>
+              </div>
+
+              <button 
+                onClick={onClose}
+                className="w-full sm:w-auto px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -313,10 +343,14 @@ export default function VideoPreviewModal({
             </div>
 
             <h3 className="text-base font-extrabold text-center text-slate-900">
-              {actionType === 'Ban' ? 'Ban Creator Account' : 'Suspend Creator Account'} (@{username})
+              {actionScope === 'Media'
+                ? `${actionType} ${isPhoto ? 'Photo' : 'Video'}`
+                : `${actionType} Creator Account (@${username})`}
             </h3>
             <p className="text-xs text-slate-500 text-center mt-1">
-              Enter reason for {actionType.toLowerCase()}ing account. This will be sent as a live notification to the user's app:
+              {actionScope === 'Media'
+                ? `Enter reason for ${actionType.toLowerCase()}ing this media. It will be moved directly to Restricted Accounts:`
+                : `Enter reason for ${actionType.toLowerCase()}ing account. This will be sent as a live notification to the user's app:`}
             </p>
 
             <form onSubmit={handleConfirmRestriction} className="mt-4 space-y-4">

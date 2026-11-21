@@ -1,4 +1,15 @@
-import { QueryDocumentSnapshot, DocumentData } from 'firebase/firestore';
+import {
+  QueryDocumentSnapshot,
+  DocumentData,
+  Firestore,
+  doc,
+  deleteDoc,
+  getDoc,
+  updateDoc,
+  collection,
+  addDoc,
+  serverTimestamp,
+} from 'firebase/firestore';
 
 export type MediaSourceCollection = 'posts' | 'reels' | 'stories' | 'videos' | 'live_uploads';
 
@@ -54,6 +65,14 @@ export function normalizeUserDoc(docSnap: QueryDocumentSnapshot<DocumentData> | 
   const videoViewsCount = Number(data.videoViewsCount ?? 0);
   const monetizationStatus = data.monetizationStatus || data.monetization || (data.isMonetized ? 'Approved' : 'Not Applied');
 
+  const rawStatusLower = String(data.status || data.accountStatus || '').trim().toLowerCase();
+  const normalizedUserStatus =
+    data.isBanned === true || rawStatusLower === 'banned'
+      ? 'Banned'
+      : data.isSuspended === true || rawStatusLower === 'suspended' || data.isRestricted === true
+      ? 'Suspended'
+      : data.status || data.accountStatus || 'Active';
+
   return {
     ...data,
     // Always preserve the Firestore document ID (avoid being overwritten by numeric `data.id`)
@@ -67,7 +86,7 @@ export function normalizeUserDoc(docSnap: QueryDocumentSnapshot<DocumentData> | 
     email: data.email || '',
     photoURL,
     avatar: photoURL,
-    status: data.status || 'Active',
+    status: normalizedUserStatus,
     followers,
     followersCount: followers,
     followingCount: following,
@@ -79,8 +98,57 @@ export function normalizeUserDoc(docSnap: QueryDocumentSnapshot<DocumentData> | 
     monetizationStatus,
     monetization: monetizationStatus,
     totalEarnings: data.totalEarnings || data.earnings || '₹0',
-    suspendReason: data.suspendReason || data.suspensionReason || data.banReason || '',
+    suspendReason: data.suspendReason || data.suspensionReason || data.banReason || data.restrictionReason || '',
   };
+}
+
+export function isUserRestricted(user: any): boolean {
+  if (!user) return false;
+  const st = String(user.status || user.accountStatus || '').trim().toLowerCase();
+  return Boolean(
+    user.isBanned === true ||
+    user.isSuspended === true ||
+    user.isRestricted === true ||
+    st === 'banned' ||
+    st === 'suspended'
+  );
+}
+
+export function getUserMonetizationApplicationStatus(
+  user: any
+): 'Pending' | 'Approved' | 'Rejected' | null {
+  if (!user) return null;
+  if (user.isMonetized === true) return 'Approved';
+
+  const raw = String(user.monetizationStatus || user.monetization || '')
+    .trim()
+    .toLowerCase();
+
+  if (
+    raw === 'pending' ||
+    raw === 'applied' ||
+    raw === 'requested' ||
+    raw === 'submitted' ||
+    raw === 'in_review' ||
+    raw === 'in review' ||
+    raw === 'under_review' ||
+    raw === 'under review' ||
+    raw === 'waiting' ||
+    user.monetizationApplied === true ||
+    user.monetizationRequested === true
+  ) {
+    return 'Pending';
+  }
+
+  if (raw === 'approved' || raw === 'active' || raw === 'monetized' || raw === 'enabled') {
+    return 'Approved';
+  }
+
+  if (raw === 'rejected' || raw === 'revoked' || raw === 'declined' || raw === 'denied') {
+    return 'Rejected';
+  }
+
+  return null;
 }
 
 export function normalizeMediaDoc(
@@ -200,6 +268,31 @@ export function normalizeMediaDoc(
       ? 'Live Upload'
       : 'Video';
 
+  const isDeleted = Boolean(
+    data.isDeleted === true ||
+    data.deleted === true ||
+    data.deletedAt ||
+    String(data.status || '').toLowerCase() === 'deleted'
+  );
+
+  const rawMediaStatus = String(data.status || '').trim().toLowerCase();
+  const isMediaBanned = Boolean(data.isBanned === true || rawMediaStatus === 'banned');
+  const isMediaSuspended = Boolean(data.isSuspended === true || rawMediaStatus === 'suspended');
+  const isMediaBlockedFlag = Boolean(
+    data.isBlocked === true ||
+    data.isRestricted === true ||
+    rawMediaStatus === 'blocked' ||
+    isMediaBanned ||
+    isMediaSuspended
+  );
+  const normalizedMediaStatus = isMediaBanned
+    ? 'Banned'
+    : isMediaSuspended
+    ? 'Suspended'
+    : isMediaBlockedFlag
+    ? 'Blocked'
+    : data.status || 'Active';
+
   return {
     ...data,
     id: docId,
@@ -226,12 +319,48 @@ export function normalizeMediaDoc(
     likes,
     comments,
     shares,
-    status: data.status || (data.isBlocked ? 'Blocked' : 'Active'),
-    isBlocked: Boolean(data.isBlocked || data.status === 'Blocked'),
+    status: normalizedMediaStatus,
+    isBlocked: isMediaBlockedFlag,
+    isBanned: isMediaBanned,
+    isSuspended: isMediaSuspended,
+    isRestricted: isMediaBlockedFlag,
+    blockReason:
+      data.banReason ||
+      data.suspensionReason ||
+      data.suspendReason ||
+      data.blockReason ||
+      data.restrictionReason ||
+      data.reason ||
+      '',
+    isDeleted,
     isViralBoosted: Boolean(data.isViralBoosted),
     createdAtMs,
     timeLabel: formatTimeLabel(data.createdAt || data.timestamp || data.uploadedAt || data.created_at),
   };
+}
+
+export function isMediaDeleted(data: any): boolean {
+  if (!data) return false;
+  return Boolean(
+    data.isDeleted === true ||
+    data.deleted === true ||
+    data.deletedAt ||
+    String(data.status || '').toLowerCase() === 'deleted'
+  );
+}
+
+export function isMediaRestricted(item: any): boolean {
+  if (!item) return false;
+  const st = String(item.status || '').trim().toLowerCase();
+  return Boolean(
+    item.isBlocked === true ||
+    item.isBanned === true ||
+    item.isSuspended === true ||
+    item.isRestricted === true ||
+    st === 'blocked' ||
+    st === 'banned' ||
+    st === 'suspended'
+  );
 }
 
 export function buildUsersLookupMap(users: any[]): Record<string, any> {
@@ -265,4 +394,287 @@ export function doesMediaBelongToUser(media: any, user: any): boolean {
     return true;
   }
   return false;
+}
+
+export async function deleteMediaFromFirestore(db: Firestore, item: any): Promise<{ col: string; docId: string }> {
+  const col = item?.sourceCollection || 'videos';
+  const docId = item?.docId || item?.id || item?.videoId || item?.uploadId;
+  if (!docId) {
+    throw new Error('Missing document ID for media deletion');
+  }
+
+  // 1. Delete the actual document from its exact Firestore collection
+  await deleteDoc(doc(db, col, docId));
+
+  // 2. Safely decrement uploader counters on /users/{uid} if present
+  const ownerId = item?.userId || item?.uid || item?.uploaderId || item?.authorId;
+  if (ownerId) {
+    try {
+      const userRef = doc(db, 'users', String(ownerId));
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const uData = userSnap.data() || {};
+        const updates: Record<string, any> = {};
+        if (col === 'stories' && typeof uData.storiesUploadedCount === 'number' && uData.storiesUploadedCount > 0) {
+          updates.storiesUploadedCount = uData.storiesUploadedCount - 1;
+        }
+        if (col === 'posts' || col === 'reels' || col === 'videos') {
+          if (typeof uData.postCount === 'number' && uData.postCount > 0) {
+            updates.postCount = uData.postCount - 1;
+          }
+          if (item?.mediaKind === 'Photo' && typeof uData.photoUploadsCount === 'number' && uData.photoUploadsCount > 0) {
+            updates.photoUploadsCount = uData.photoUploadsCount - 1;
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          await updateDoc(userRef, updates).catch(() => {});
+        }
+      }
+    } catch {
+      // ignore optional counter sync errors
+    }
+
+    // 3. Optional notification to uploader (only if /notifications rule allows admin write)
+    try {
+      await addDoc(collection(db, 'notifications'), {
+        userId: String(ownerId),
+        title: 'Content Removed by Admin',
+        message: `Your ${item?.sourceLabel || 'media'} "${item?.caption || item?.title || docId}" was removed by Admin.`,
+        createdAt: serverTimestamp(),
+        read: false,
+        type: 'content_removed',
+      });
+    } catch {
+      // ignore if notifications rules are not enabled
+    }
+  }
+
+  return { col, docId };
+}
+
+// Restrict (Suspend / Ban) a specific Photo or Video in Firestore.
+// IMPORTANT: Updates ONLY the media document & optional uploader notification; NEVER creates a Report entry.
+export async function restrictMediaInFirestore(
+  db: Firestore,
+  item: any,
+  action: 'Suspend' | 'Ban',
+  reason: string
+): Promise<{ col: string; docId: string; statusValue: 'Suspended' | 'Banned' }> {
+  const col = item?.sourceCollection || 'videos';
+  const docId = item?.docId || item?.id || item?.videoId || item?.uploadId;
+  if (!docId) {
+    throw new Error('Missing document ID for media restriction');
+  }
+
+  const isBan = action === 'Ban';
+  const statusValue: 'Suspended' | 'Banned' = isBan ? 'Banned' : 'Suspended';
+  const cleanReason = reason.trim() || 'Community guidelines violation';
+
+  await updateDoc(doc(db, col, docId), {
+    status: statusValue,
+    isBlocked: true,
+    isRestricted: true,
+    isBanned: isBan,
+    isSuspended: !isBan,
+    blockReason: cleanReason,
+    restrictionReason: cleanReason,
+    banReason: isBan ? cleanReason : null,
+    suspensionReason: !isBan ? cleanReason : null,
+    suspendReason: !isBan ? cleanReason : null,
+    restrictedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+
+  const ownerId = item?.userId || item?.uid || item?.uploaderId || item?.authorId;
+  if (ownerId) {
+    try {
+      await addDoc(collection(db, 'notifications'), {
+        userId: String(ownerId),
+        title: isBan ? 'Media Banned by Admin' : 'Media Suspended by Admin',
+        message: `Your ${item?.sourceLabel || 'media'} "${item?.caption || item?.title || docId}" has been ${statusValue.toLowerCase()}. Reason: ${cleanReason}`,
+        reason: cleanReason,
+        createdAt: serverTimestamp(),
+        read: false,
+        type: isBan ? 'media_banned' : 'media_suspended',
+      });
+    } catch {
+      // ignore if notifications rules are not enabled
+    }
+  }
+
+  return { col, docId, statusValue };
+}
+
+// Identify genuine user-submitted reports coming from the App (and strictly exclude any Admin ban/suspend entries)
+export function isAppReportDoc(raw: any, collectionName: 'reports' | 'support_tickets' = 'reports'): boolean {
+  if (!raw) return false;
+
+  // Strictly exclude anything triggered by Admin moderation actions
+  if (
+    raw.source === 'admin' ||
+    raw.createdBy === 'admin' ||
+    raw.isAdminAction === true ||
+    raw.adminRestriction === true
+  ) {
+    return false;
+  }
+
+  const cat = String(raw.category || raw.type || '').trim().toLowerCase();
+  const subj = String(raw.subject || raw.title || '').trim().toLowerCase();
+
+  // Exclude admin account restriction or suspension appeals
+  if (
+    cat.includes('appeal') ||
+    cat.includes('recovery') ||
+    cat.includes('restore') ||
+    cat.includes('admin moderation') ||
+    cat.includes('account restriction') ||
+    subj.includes('appeal')
+  ) {
+    return false;
+  }
+
+  if (collectionName === 'reports') {
+    return true;
+  }
+
+  // Inside /support_tickets, match only user-submitted reports
+  const hasReportCategory =
+    cat.includes('report') ||
+    cat.includes('violation') ||
+    cat.includes('abuse') ||
+    cat.includes('flag');
+
+  const hasReportedTarget = Boolean(
+    raw.reportedMediaId ||
+    raw.reportedPostId ||
+    raw.reportedVideoId ||
+    raw.reportedReelId ||
+    raw.reportedStoryId ||
+    raw.reportedContentId ||
+    raw.targetMediaId ||
+    raw.postId ||
+    raw.reelId ||
+    raw.videoId ||
+    raw.reportedUserId
+  );
+
+  return hasReportCategory || hasReportedTarget;
+}
+
+export function normalizeAppReport(
+  docSnap: QueryDocumentSnapshot<DocumentData> | { id: string; data: () => DocumentData },
+  sourceCollection: 'reports' | 'support_tickets'
+) {
+  const data = typeof docSnap.data === 'function' ? docSnap.data() : {};
+  const docId = docSnap.id;
+
+  const reporterId = String(
+    data.reporterUserId ||
+    data.reporterId ||
+    data.reportedBy ||
+    data.userId ||
+    data.uid ||
+    data.senderId ||
+    ''
+  );
+
+  const reportedUserId = String(
+    data.reportedUserId ||
+    data.targetUserId ||
+    data.creatorId ||
+    data.ownerId ||
+    data.uploaderId ||
+    data.accusedUserId ||
+    ''
+  );
+
+  const reportedMediaId = String(
+    data.reportedMediaId ||
+    data.reportedPostId ||
+    data.reportedVideoId ||
+    data.reportedReelId ||
+    data.reportedStoryId ||
+    data.reportedContentId ||
+    data.targetMediaId ||
+    data.contentId ||
+    data.mediaId ||
+    data.postId ||
+    data.reelId ||
+    data.videoId ||
+    data.storyId ||
+    ''
+  );
+
+  const reportedCollectionRaw = String(
+    data.reportedCollection ||
+    data.targetCollection ||
+    data.mediaCollection ||
+    data.contentType ||
+    data.mediaType ||
+    (data.reportedReelId || data.reelId
+      ? 'reels'
+      : data.reportedStoryId || data.storyId
+      ? 'stories'
+      : data.reportedPostId || data.postId
+      ? 'posts'
+      : data.reportedVideoId || data.videoId
+      ? 'videos'
+      : '')
+  ).toLowerCase();
+
+  const reportReason = String(
+    data.reason ||
+    data.reportReason ||
+    data.customReason ||
+    data.message ||
+    data.description ||
+    data.details ||
+    data.comment ||
+    data.violationReason ||
+    ''
+  ).trim();
+
+  const reportCategory = String(
+    data.reportCategory ||
+    data.violationType ||
+    data.issueType ||
+    data.subject ||
+    (data.category && data.category !== 'Reports & Violations' ? data.category : '') ||
+    'User Report'
+  );
+
+  const rawStatus = String(data.status || 'Pending').trim().toLowerCase();
+  const status: 'Pending' | 'Resolved' =
+    rawStatus === 'resolved' ||
+    rawStatus === 'reviewed' ||
+    rawStatus === 'closed' ||
+    rawStatus === 'dismissed' ||
+    rawStatus === 'action_taken'
+      ? 'Resolved'
+      : 'Pending';
+
+  const createdAtMs =
+    toMillis(data.createdAt) ||
+    toMillis(data.timestamp) ||
+    toMillis(data.reportedAt) ||
+    toMillis(data.created_at) ||
+    0;
+
+  return {
+    ...data,
+    id: docId,
+    docId,
+    reportKey: `${sourceCollection}:${docId}`,
+    sourceCollection,
+    reporterId,
+    reportedUserId,
+    reportedMediaId,
+    reportedCollectionRaw,
+    reportReason,
+    reportCategory,
+    status,
+    createdAtMs,
+    timeLabel: formatTimeLabel(data.createdAt || data.timestamp || data.reportedAt || data.created_at),
+  };
 }

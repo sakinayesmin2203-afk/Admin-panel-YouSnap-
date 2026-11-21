@@ -2,7 +2,7 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import { LayoutDashboard, Users, Video, ShieldAlert, DollarSign, Headphones, Settings, Bell, LogOut } from 'lucide-react';
+import { LayoutDashboard, Users, Video, Flag, ShieldAlert, DollarSign, Headphones, Settings, Bell, LogOut } from 'lucide-react';
 
 interface SidebarProps {
   activeView: string;
@@ -15,6 +15,7 @@ export default function Sidebar({ activeView, onNavigate, onLogout }: SidebarPro
     { name: 'Dashboard', icon: LayoutDashboard },
     { name: 'Users', icon: Users },
     { name: 'Videos', icon: Video },
+    { name: 'Reports', icon: Flag },
     { name: 'Restricted Accounts', icon: ShieldAlert },
     { name: 'Monetization', icon: DollarSign },
     { name: 'Support', icon: Headphones },

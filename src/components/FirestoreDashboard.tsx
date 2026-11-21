@@ -29,6 +29,9 @@ import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
   buildUsersLookupMap,
+  deleteMediaFromFirestore,
+  getUserMonetizationApplicationStatus,
+  isMediaRestricted,
   normalizeMediaDoc,
   normalizeUserDoc,
 } from '../lib/firestoreAdapters';
@@ -42,7 +45,7 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     videos: [],
     live_uploads: [],
   });
-  const [monetizationCount, setMonetizationCount] = useState<number>(0);
+  const [monetizationReqs, setMonetizationReqs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -82,7 +85,9 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
       onSnapshot(
         query(collection(db, colName)),
         (snapshot) => {
-          const items = snapshot.docs.map((d) => normalizeMediaDoc(d, colName));
+          const items = snapshot.docs
+            .map((d) => normalizeMediaDoc(d, colName))
+            .filter((item) => !item.isDeleted && !isMediaRestricted(item));
           setMediaByCollection((prev) => ({
             ...prev,
             [colName]: items,
@@ -95,10 +100,13 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
       )
     );
 
-    // 3. Live listener for Monetization requests count (optional collection)
+    // 3. Live listener for Monetization requests (optional collection)
     const unsubMonetization = onSnapshot(
       query(collection(db, 'monetization_requests')),
-      (snapshot) => setMonetizationCount(snapshot.size),
+      (snapshot) => {
+        const docs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        setMonetizationReqs(docs);
+      },
       () => {}
     );
 
@@ -111,14 +119,21 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
 
   const usersMap = useMemo(() => buildUsersLookupMap(usersList), [usersList]);
 
-  const pendingUserMonetizationCount = useMemo(() => {
-    return usersList.filter((u) => {
-      const st = String(u.monetizationStatus || '').toLowerCase();
-      return st === 'pending' || st === 'requested' || st === 'applied';
+  const effectiveMonetizationCount = useMemo(() => {
+    const reqUserIds = new Set<string>(
+      monetizationReqs
+        .flatMap((r: any) => [r.userId, r.uid, r.creatorId, r.applicantId].filter(Boolean).map(String))
+    );
+    const pendingInCollection = monetizationReqs.filter((r: any) => {
+      const s = String(r.status || 'Pending').trim().toLowerCase();
+      return s !== 'approved' && s !== 'active' && s !== 'monetized' && s !== 'rejected' && s !== 'revoked' && s !== 'declined';
     }).length;
-  }, [usersList]);
-
-  const effectiveMonetizationCount = monetizationCount > 0 ? monetizationCount : pendingUserMonetizationCount;
+    const pendingInUsers = usersList.filter((u) => {
+      if (reqUserIds.has(u.docId) || (u.uid && reqUserIds.has(String(u.uid)))) return false;
+      return getUserMonetizationApplicationStatus(u) === 'Pending';
+    }).length;
+    return pendingInCollection + pendingInUsers;
+  }, [monetizationReqs, usersList]);
 
   // Merge all uploaded posts, reels, stories, videos, and live_uploads, enriched with uploader profile
   const allUploads = useMemo(() => {
@@ -187,7 +202,7 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     const col = deleteModalItem.sourceCollection || 'videos';
     const docId = deleteModalItem.docId || deleteModalItem.id;
     try {
-      await deleteDoc(doc(db, col, docId));
+      await deleteMediaFromFirestore(db, deleteModalItem);
       showToast(`"${deleteModalItem.title}" deleted from Firestore /${col}`);
       setDeleteModalItem(null);
       if (previewItem?.mediaKey === deleteModalItem.mediaKey) setPreviewItem(null);

@@ -36,9 +36,12 @@ import {
 import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
+  deleteMediaFromFirestore,
   doesMediaBelongToUser,
+  isMediaRestricted,
   normalizeMediaDoc,
   normalizeUserDoc,
+  restrictMediaInFirestore,
 } from '../lib/firestoreAdapters';
 
 interface UserDetailsModalProps {
@@ -103,7 +106,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
         (snapshot) => {
           const items = snapshot.docs
             .map((d) => normalizeMediaDoc(d, colName))
-            .filter((item) => doesMediaBelongToUser(item, user));
+            .filter((item) => !item.isDeleted && doesMediaBelongToUser(item, user));
           setMediaByCollection((prev) => ({ ...prev, [colName]: items }));
           setMediaLoading(false);
         },
@@ -281,12 +284,30 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
     const docId = mediaItem?.docId || mediaItem?.id || mediaItem;
     if (!window.confirm('Are you sure you want to delete this media item from Firestore?')) return;
     try {
-      await deleteDoc(doc(db, col, docId));
+      await deleteMediaFromFirestore(db, mediaItem);
       showToast(`Media removed successfully from /${col}`);
       setSelectedMedia(null);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${col}/${docId}`);
       showToast('Failed to delete media — check Firestore Rules.');
+    }
+  };
+
+  const handleRestrictMedia = async (mediaItem: any, action: 'Suspend' | 'Ban') => {
+    const col = mediaItem?.sourceCollection || 'videos';
+    const docId = mediaItem?.docId || mediaItem?.id;
+    const reasonInput = window.prompt(
+      `Enter reason to ${action.toLowerCase()} this media (moves to Restricted Accounts):`,
+      'Community guidelines violation'
+    );
+    if (!reasonInput || !reasonInput.trim()) return;
+    try {
+      const { statusValue } = await restrictMediaInFirestore(db, mediaItem, action, reasonInput.trim());
+      showToast(`Media ${statusValue} & moved to Restricted Accounts.`);
+      setSelectedMedia(null);
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.UPDATE, `${col}/${docId}`);
+      showToast('Failed to restrict media — check Firestore Rules.');
     }
   };
 
@@ -665,18 +686,39 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
                 )}
               </div>
 
-              <div className="flex items-center justify-between text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-100">
                 <div className="space-y-0.5">
-                  <p className="font-bold text-slate-900">{selectedMedia.views || 0} Views • {selectedMedia.likes || 0} Likes</p>
+                  <p className="font-bold text-slate-900">
+                    {selectedMedia.views || 0} Views • {selectedMedia.likes || 0} Likes
+                    {isMediaRestricted(selectedMedia) && (
+                      <span className="ml-2 px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded text-[10px]">
+                        {selectedMedia.status}
+                      </span>
+                    )}
+                  </p>
                   <p className="text-[10px] text-slate-400">Uploaded by @{currentUserData.username || currentUserData.displayName} • /{selectedMedia.sourceCollection}</p>
                 </div>
 
-                <button
-                  onClick={() => handleDeleteMedia(selectedMedia)}
-                  className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl font-bold text-xs transition flex items-center gap-1.5"
-                >
-                  <Trash2 size={14} /> Delete / Remove Media
-                </button>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    onClick={() => handleRestrictMedia(selectedMedia, 'Suspend')}
+                    className="px-2.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-xl font-bold text-xs transition flex items-center gap-1"
+                  >
+                    <AlertTriangle size={13} /> Suspend
+                  </button>
+                  <button
+                    onClick={() => handleRestrictMedia(selectedMedia, 'Ban')}
+                    className="px-2.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl font-bold text-xs transition flex items-center gap-1"
+                  >
+                    <Ban size={13} /> Ban
+                  </button>
+                  <button
+                    onClick={() => handleDeleteMedia(selectedMedia)}
+                    className="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs transition flex items-center gap-1.5"
+                  >
+                    <Trash2 size={14} /> Delete
+                  </button>
+                </div>
               </div>
             </div>
           </div>

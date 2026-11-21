@@ -32,6 +32,10 @@ import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
   buildUsersLookupMap,
+  deleteMediaFromFirestore,
+  getUserMonetizationApplicationStatus,
+  isMediaRestricted,
+  isUserRestricted,
   normalizeMediaDoc,
   normalizeUserDoc,
 } from '../lib/firestoreAdapters';
@@ -62,9 +66,7 @@ export default function FirestoreRestrictedAccounts() {
       query(collection(db, 'users')),
       (snapshot) => {
         const normalized = snapshot.docs.map((d) => normalizeUserDoc(d));
-        const suspended = normalized.filter(
-          (u) => u.status === 'Suspended' || u.status === 'Banned'
-        );
+        const suspended = normalized.filter((u) => isUserRestricted(u));
         setUsersMap(buildUsersLookupMap(normalized));
         setRestrictedUsers(suspended);
         setLoading(false);
@@ -81,7 +83,7 @@ export default function FirestoreRestrictedAccounts() {
         (snapshot) => {
           const blocked = snapshot.docs
             .map((d) => normalizeMediaDoc(d, colName))
-            .filter((v) => v.isBlocked || v.status === 'Blocked');
+            .filter((v) => !v.isDeleted && isMediaRestricted(v));
           setBlockedMediaByCol((prev) => ({ ...prev, [colName]: blocked }));
         },
         () => {}
@@ -105,6 +107,30 @@ export default function FirestoreRestrictedAccounts() {
       unsubMonetization();
     };
   }, []);
+
+  const allRevokedMonetization = React.useMemo(() => {
+    const merged = [...revokedMonetization];
+    const existingIds = new Set(
+      merged.flatMap((m: any) => [m.userId, m.uid].filter(Boolean).map(String))
+    );
+    const seen = new Set<string>();
+    Object.values(usersMap).forEach((u: any) => {
+      if (!u?.docId || seen.has(u.docId)) return;
+      seen.add(u.docId);
+      if (existingIds.has(u.docId) || (u.uid && existingIds.has(String(u.uid)))) return;
+      if (getUserMonetizationApplicationStatus(u) === 'Rejected') {
+        merged.push({
+          id: u.docId,
+          userId: u.docId,
+          followersCount: u.followersCount || 0,
+          earnings: parseFloat(String(u.totalEarnings || '0').replace(/[^0-9.]/g, '')) || 0,
+          status: 'Rejected',
+          fromUserDoc: true,
+        });
+      }
+    });
+    return merged;
+  }, [revokedMonetization, usersMap]);
 
   const blockedVideos = React.useMemo(() => {
     const merged: any[] = [];
@@ -162,8 +188,17 @@ export default function FirestoreRestrictedAccounts() {
     try {
       await updateDoc(doc(db, col, docId), {
         isBlocked: false,
+        isBanned: false,
+        isSuspended: false,
+        isRestricted: false,
         status: 'Active',
-        restoredAt: serverTimestamp()
+        blockReason: null,
+        banReason: null,
+        suspensionReason: null,
+        suspendReason: null,
+        restrictionReason: null,
+        restoredAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
 
       if (video.userId) {
@@ -193,7 +228,7 @@ export default function FirestoreRestrictedAccounts() {
     const docId = video.docId || video.id;
     if (!window.confirm('Permanently delete this blocked media from Firestore?')) return;
     try {
-      await deleteDoc(doc(db, col, docId));
+      await deleteMediaFromFirestore(db, video);
       showToast('Media permanently deleted');
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${col}/${docId}`);
@@ -204,21 +239,32 @@ export default function FirestoreRestrictedAccounts() {
   // Action 3: Restore Monetization
   const handleRestoreMonetization = async (req: any) => {
     const reqId = req.docId || req.id;
+    const targetUserId = req.userId || req.uid || (req.fromUserDoc ? reqId : '');
+    const resolvedUserDocId = (targetUserId && usersMap[targetUserId]?.docId) || targetUserId;
     try {
-      await updateDoc(doc(db, 'monetization_requests', reqId), {
-        status: 'Approved',
-        restoredAt: serverTimestamp()
-      });
+      if (!req.fromUserDoc) {
+        await updateDoc(doc(db, 'monetization_requests', reqId), {
+          status: 'Approved',
+          restoredAt: serverTimestamp()
+        });
+      }
 
-      if (req.userId) {
-        await updateDoc(doc(db, 'users', req.userId), {
+      if (resolvedUserDocId) {
+        await updateDoc(doc(db, 'users', resolvedUserDocId), {
           isMonetized: true,
           monetizationStatus: 'Approved',
+          monetization: 'Active',
+          monetizationApproved: true,
+          monetizationRejected: false,
+          monetizationApplied: false,
+          monetizationRequested: false,
+          monetizationReviewedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
         }).catch(() => {});
 
         try {
           await setDoc(doc(collection(db, 'notifications'), `notif_${Date.now()}`), {
-            userId: req.userId,
+            userId: resolvedUserDocId,
             title: 'Monetization Restored! 💰',
             message: 'Your creator monetization request has been approved and reinstated.',
             createdAt: serverTimestamp(),
@@ -231,7 +277,7 @@ export default function FirestoreRestrictedAccounts() {
 
       showToast('Monetization successfully restored for creator!');
     } catch (err: any) {
-      handleFirestoreError(err, OperationType.UPDATE, `monetization_requests/${reqId}`);
+      handleFirestoreError(err, OperationType.UPDATE, req.fromUserDoc ? `users/${resolvedUserDocId}` : `monetization_requests/${reqId}`);
       showToast('Failed to restore monetization');
     }
   };
@@ -248,7 +294,7 @@ export default function FirestoreRestrictedAccounts() {
 
   const filteredAccounts = restrictedUsers.filter(u => matchesSearch(u, ['displayName', 'username', 'email', 'id', 'suspensionReason', 'banReason']));
   const filteredMedia = blockedVideos.filter(v => matchesSearch(v, ['videoId', 'caption', 'userId']));
-  const filteredMonetization = revokedMonetization.filter(m => matchesSearch(m, ['id', 'userId']));
+  const filteredMonetization = allRevokedMonetization.filter(m => matchesSearch(m, ['id', 'userId']));
 
   return (
     <div className="space-y-6">
@@ -276,12 +322,12 @@ export default function FirestoreRestrictedAccounts() {
         </div>
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
           <p className="text-xs font-bold text-purple-500 uppercase">Revoked Monetization</p>
-          <p className="text-2xl font-black text-purple-600 mt-1">{revokedMonetization.length}</p>
+          <p className="text-2xl font-black text-purple-600 mt-1">{allRevokedMonetization.length}</p>
         </div>
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
           <p className="text-xs font-bold text-slate-500 uppercase">Total Restrictions</p>
           <p className="text-2xl font-black text-slate-900 mt-1">
-            {restrictedUsers.length + blockedVideos.length + revokedMonetization.length}
+            {restrictedUsers.length + blockedVideos.length + allRevokedMonetization.length}
           </p>
         </div>
       </div>
@@ -291,10 +337,10 @@ export default function FirestoreRestrictedAccounts() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             {[
-              { id: 'All', label: 'All Restrictions', count: restrictedUsers.length + blockedVideos.length + revokedMonetization.length },
+              { id: 'All', label: 'All Restrictions', count: restrictedUsers.length + blockedVideos.length + allRevokedMonetization.length },
               { id: 'Accounts', label: 'Suspended & Banned Accounts', count: restrictedUsers.length },
               { id: 'Media', label: 'Blocked Photos & Videos', count: blockedVideos.length },
-              { id: 'Monetization', label: 'Revoked Monetization', count: revokedMonetization.length }
+              { id: 'Monetization', label: 'Revoked Monetization', count: allRevokedMonetization.length }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -447,7 +493,7 @@ export default function FirestoreRestrictedAccounts() {
                       const uploader = usersMap[video.userId] || {
                         displayName: 'Uploader User',
                         username: video.userId || 'creator',
-                        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80'
+                        avatar: ''
                       };
 
                       return (
@@ -466,7 +512,18 @@ export default function FirestoreRestrictedAccounts() {
                                 </div>
                               )}
                               <div>
-                                <p className="font-bold text-slate-900 line-clamp-1">{video.caption || 'Sensitive Media'}</p>
+                                <div className="flex items-center gap-1.5">
+                                  <p className="font-bold text-slate-900 line-clamp-1">{video.caption || 'Sensitive Media'}</p>
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                                    video.status === 'Banned'
+                                      ? 'bg-rose-100 text-rose-700'
+                                      : video.status === 'Suspended'
+                                      ? 'bg-amber-100 text-amber-700'
+                                      : 'bg-slate-200 text-slate-700'
+                                  }`}>
+                                    {video.status || 'Blocked'}
+                                  </span>
+                                </div>
                                 <p className="text-[10px] text-slate-400 font-mono">/{video.sourceCollection || 'videos'} • {video.videoId || video.id}</p>
                               </div>
                             </div>
@@ -553,10 +610,12 @@ export default function FirestoreRestrictedAccounts() {
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {filteredMonetization.map(req => {
-                      const creator = usersMap[req.userId] || {
+                      const lookupId = req.userId || req.uid || req.id;
+                      const creator = usersMap[lookupId] || {
+                        id: lookupId,
                         displayName: 'Creator User',
-                        username: req.userId || 'creator',
-                        avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80'
+                        username: lookupId || 'creator',
+                        avatar: ''
                       };
 
                       return (
@@ -566,11 +625,17 @@ export default function FirestoreRestrictedAccounts() {
                               onClick={() => setSelectedUserForModal(creator)}
                               className="flex items-center gap-3 cursor-pointer group"
                             >
-                              <img 
-                                src={creator.photoURL || creator.avatar} 
-                                alt="" 
-                                className="w-10 h-10 rounded-xl object-cover border border-slate-200 group-hover:border-purple-500 transition shadow-2xs" 
-                              />
+                              {creator.photoURL || creator.avatar ? (
+                                <img 
+                                  src={creator.photoURL || creator.avatar} 
+                                  alt="" 
+                                  className="w-10 h-10 rounded-xl object-cover border border-slate-200 group-hover:border-purple-500 transition shadow-2xs" 
+                                />
+                              ) : (
+                                <div className="w-10 h-10 rounded-xl bg-purple-100 text-purple-700 font-black text-sm flex items-center justify-center border border-purple-200 shrink-0">
+                                  {(creator.displayName || creator.name || 'C').charAt(0).toUpperCase()}
+                                </div>
+                              )}
                               <div>
                                 <p className="font-bold text-slate-900 group-hover:text-purple-600 transition">
                                   {creator.displayName || creator.name}

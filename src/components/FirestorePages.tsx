@@ -36,12 +36,20 @@ import {
   Database,
   Check,
   X,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Copy,
+  Wallet,
+  CreditCard,
+  TrendingUp,
+  Landmark
 } from 'lucide-react';
 import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
   buildUsersLookupMap,
+  deleteMediaFromFirestore,
+  getUserMonetizationApplicationStatus,
+  isMediaRestricted,
   normalizeMediaDoc,
   normalizeUserDoc,
 } from '../lib/firestoreAdapters';
@@ -162,23 +170,6 @@ export const UsersPage = () => {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
-  };
-
-  const handleDeleteUser = async (e: React.MouseEvent, user: any) => {
-    e.stopPropagation();
-    const docId = user.docId || user.id;
-    const label = user.displayName || user.email || docId;
-    if (!window.confirm(`Delete "${label}" from Firestore /users and remove from Admin Panel?`)) return;
-    try {
-      await deleteDoc(doc(db, 'users', docId));
-      if (selectedUser && (selectedUser.docId || selectedUser.id) === docId) {
-        setSelectedUser(null);
-      }
-      showToast(`User "${label}" removed from Admin Panel & Firestore.`);
-    } catch (err: any) {
-      handleFirestoreError(err, OperationType.DELETE, `users/${docId}`);
-      showToast('Permission denied — ensure `allow delete: if isAdmin();` is published in Firestore Rules.');
-    }
   };
 
   useEffect(() => {
@@ -373,19 +364,10 @@ export const UsersPage = () => {
                       </span>
                     </td>
                     <td className="py-4 px-6 text-right">
-                      <div className="inline-flex items-center gap-2 justify-end">
-                        <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 group-hover:text-emerald-700 py-1 px-2.5 rounded-lg bg-emerald-50/70 group-hover:bg-emerald-100/70 border border-emerald-200/50 transition">
-                          <span>View Details</span>
-                          <ArrowUpRight size={13} />
-                        </span>
-                        <button
-                          onClick={(e) => handleDeleteUser(e, user)}
-                          className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200/60 transition"
-                          title="Delete User from Firestore"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 group-hover:text-emerald-700 py-1 px-2.5 rounded-lg bg-emerald-50/70 group-hover:bg-emerald-100/70 border border-emerald-200/50 transition">
+                        <span>View Details</span>
+                        <ArrowUpRight size={13} />
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -464,7 +446,9 @@ export const VideosPage = () => {
       onSnapshot(
         query(collection(db, colName)),
         (snapshot) => {
-          const data = snapshot.docs.map((docSnap) => normalizeMediaDoc(docSnap, colName));
+          const data = snapshot.docs
+            .map((docSnap) => normalizeMediaDoc(docSnap, colName))
+            .filter((item) => !item.isDeleted && !isMediaRestricted(item));
           setMediaByCollection((prev) => ({ ...prev, [colName]: data }));
           setLoading(false);
           setError(null);
@@ -504,7 +488,7 @@ export const VideosPage = () => {
     const caption = item.caption || docId;
     if (!window.confirm(`Are you sure you want to delete "${caption}" from /${col}?`)) return;
     try {
-      await deleteDoc(doc(db, col, docId));
+      await deleteMediaFromFirestore(db, item);
       showToast(`Deleted from /${col} successfully`);
       if (previewVideo?.mediaKey === item.mediaKey) setPreviewVideo(null);
     } catch (err: any) {
@@ -871,18 +855,71 @@ export const VideosPage = () => {
 // ==========================================
 // 3. MONETIZATION PAGE COMPONENT (/admin/monetization)
 // ==========================================
+const formatUsdAmount = (val: number) => {
+  const num = Number(val) || 0;
+  if (num > 0 && num < 0.01) return `$${num.toFixed(4)}`;
+  return `$${num.toFixed(2)}`;
+};
+
+const formatInrAmount = (usdVal: number, rate: number) => {
+  const inr = (Number(usdVal) || 0) * (Number(rate) || 85);
+  if (inr > 0 && inr < 0.01) return `₹${inr.toFixed(4)}`;
+  return `₹${inr.toFixed(2)}`;
+};
+
+const extractCreatorPayoutDetails = (u: any) => {
+  const payout = u?.payoutDetails || u?.bankDetails || u?.paymentDetails || {};
+  const upiId = String(
+    u?.upiId || u?.upi || payout?.upiId || payout?.upi || ''
+  ).trim();
+  const accountHolderName = String(
+    u?.accountHolderName || u?.bankAccountHolder || payout?.accountHolderName || payout?.holderName || ''
+  ).trim();
+  const bankAccount = String(
+    u?.bankAccount || u?.accountNumber || u?.bankAccountNumber || payout?.bankAccount || payout?.accountNumber || ''
+  ).trim();
+  const ifscCode = String(
+    u?.ifscCode || u?.ifsc || payout?.ifscCode || payout?.ifsc || ''
+  ).trim();
+  const bankName = String(
+    u?.bankName || payout?.bankName || ''
+  ).trim();
+  const hasDetails = Boolean(upiId || bankAccount || ifscCode || accountHolderName);
+  return { upiId, accountHolderName, bankAccount, ifscCode, bankName, hasDetails };
+};
+
 export const MonetizationPage = () => {
   const [requests, setRequests] = useState<any[]>([]);
   const [usersMap, setUsersMap] = useState<Record<string, any>>({});
+  const [adEvents, setAdEvents] = useState<any[]>([]);
+  const [adEventsError, setAdEventsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('All');
   const [selectedUserForModal, setSelectedUserForModal] = useState<any | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [usdToInrRate, setUsdToInrRate] = useState<number>(() => {
+    const saved = parseFloat(localStorage.getItem('yousnap_usd_to_inr_rate') || '85');
+    return Number.isFinite(saved) && saved > 0 ? saved : 85;
+  });
+
+  // Mark as Paid Modal State
+  const [payoutTarget, setPayoutTarget] = useState<any | null>(null);
+  const [payoutAmountUsdInput, setPayoutAmountUsdInput] = useState<string>('0');
+  const [payoutRefInput, setPayoutRefInput] = useState<string>('');
+  const [payoutSubmitting, setPayoutSubmitting] = useState(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleRateChange = (raw: string) => {
+    const parsed = parseFloat(raw);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      setUsdToInrRate(parsed);
+      localStorage.setItem('yousnap_usd_to_inr_rate', String(parsed));
+    }
   };
 
   useEffect(() => {
@@ -891,11 +928,23 @@ export const MonetizationPage = () => {
     const unsubReqs = onSnapshot(
       query(collection(db, 'monetization_requests')),
       (snapshot) => {
-        const data = snapshot.docs.map(docSnap => ({ 
-          ...docSnap.data(),
-          id: docSnap.id,
-          fromUserDoc: false
-        }));
+        const data = snapshot.docs.map(docSnap => {
+          const rawData = docSnap.data();
+          const rawStatus = String(rawData.status || 'Pending').trim().toLowerCase();
+          const normalizedStatus =
+            rawStatus === 'approved' || rawStatus === 'active' || rawStatus === 'monetized'
+              ? 'Approved'
+              : rawStatus === 'rejected' || rawStatus === 'revoked' || rawStatus === 'declined'
+              ? 'Rejected'
+              : 'Pending';
+          return {
+            ...rawData,
+            id: docSnap.id,
+            userId: rawData.userId || rawData.uid || rawData.creatorId || rawData.applicantId || '',
+            status: normalizedStatus,
+            fromUserDoc: false
+          };
+        });
         setRequests(data);
         setLoading(false);
         setError(null);
@@ -905,7 +954,7 @@ export const MonetizationPage = () => {
       }
     );
 
-    // 2. Listen to users for profile mapping and user-level monetizationStatus
+    // 2. Listen to users for profile mapping, isMonetized, UPI/Bank details, and paidAmount
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
@@ -919,67 +968,274 @@ export const MonetizationPage = () => {
       }
     );
 
+    // 3. Listen to live /ad_events (AdMob ad_revenue + monetized views)
+    const unsubAdEvents = onSnapshot(
+      query(collection(db, 'ad_events')),
+      (snapshot) => {
+        const events = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...d.data(),
+        }));
+        setAdEvents(events);
+        setAdEventsError(null);
+      },
+      (err: any) => {
+        const msg = String(err?.message || 'Permission error reading /ad_events');
+        setAdEventsError(msg);
+      }
+    );
+
     return () => {
       unsubReqs();
       unsubUsers();
+      unsubAdEvents();
     };
   }, []);
 
-  // Combine explicit monetization_requests with any users who have an active/pending/rejected monetizationStatus
+  // Merge explicit monetization_requests with any users who explicitly applied / are approved / rejected
   const combinedRequests = React.useMemo(() => {
-    if (requests.length > 0) return requests;
-    const seen = new Set<string>();
-    const derived: any[] = [];
+    const merged: any[] = [...requests];
+    const existingUserIds = new Set<string>(
+      requests.map((r: any) => String(r.userId || r.uid || '')).filter(Boolean)
+    );
+
+    const seenUsers = new Set<string>();
     Object.values(usersMap).forEach((u: any) => {
-      if (!u?.docId || seen.has(u.docId)) return;
-      seen.add(u.docId);
-      const rawStatus = String(u.monetizationStatus || '').trim();
-      if (!rawStatus || rawStatus.toLowerCase() === 'not applied' || rawStatus.toLowerCase() === 'none') {
+      if (!u?.docId || seenUsers.has(u.docId)) return;
+      seenUsers.add(u.docId);
+
+      // Skip if this user already has a document in monetization_requests
+      if (existingUserIds.has(u.docId) || (u.uid && existingUserIds.has(String(u.uid)))) {
         return;
       }
-      const normalizedStatus =
-        rawStatus.toLowerCase() === 'approved' || rawStatus.toLowerCase() === 'active'
-          ? 'Approved'
-          : rawStatus.toLowerCase() === 'rejected'
-          ? 'Rejected'
-          : 'Pending';
-      derived.push({
+
+      const appStatus = getUserMonetizationApplicationStatus(u);
+      if (!appStatus) return;
+
+      merged.push({
         id: u.docId,
         userId: u.docId,
         followersCount: u.followersCount || 0,
         totalViews: u.videoViewsCount || 0,
         earnings: parseFloat(String(u.totalEarnings || '0').replace(/[^0-9.]/g, '')) || 0,
-        status: normalizedStatus,
+        status: appStatus,
         fromUserDoc: true,
       });
     });
-    return derived;
+
+    return merged;
   }, [requests, usersMap]);
+
+  // Live 60% / 40% AdMob + Monetized View Revenue Calculation (ONLY for isMonetized == true / Approved users)
+  const revenueSummary = React.useMemo(() => {
+    // Build canonical creator ID mapping for Approved (isMonetized == true) creators
+    const approvedCanonicalIds = new Set<string>();
+    const aliasToCanonical: Record<string, string> = {};
+
+    Object.values(usersMap).forEach((u: any) => {
+      if (!u?.docId) return;
+      const isApprovedUser =
+        u.isMonetized === true ||
+        u.monetizationApproved === true ||
+        getUserMonetizationApplicationStatus(u) === 'Approved';
+
+      if (isApprovedUser) {
+        approvedCanonicalIds.add(u.docId);
+        aliasToCanonical[u.docId] = u.docId;
+        if (u.uid) aliasToCanonical[String(u.uid)] = u.docId;
+        if (u.id) aliasToCanonical[String(u.id)] = u.docId;
+      }
+    });
+
+    combinedRequests.forEach((req: any) => {
+      if (req.status === 'Approved' && req.userId) {
+        const matchedUser = usersMap[req.userId];
+        const canonicalId = matchedUser?.docId || String(req.userId);
+        approvedCanonicalIds.add(canonicalId);
+        aliasToCanonical[String(req.userId)] = canonicalId;
+        if (matchedUser?.uid) aliasToCanonical[String(matchedUser.uid)] = canonicalId;
+        if (matchedUser?.docId) aliasToCanonical[matchedUser.docId] = canonicalId;
+      }
+    });
+
+    const viewsByCreator: Record<string, number> = {};
+    const directUsdByCreator: Record<string, number> = {};
+    let platformFeedPoolUsd = 0;
+    let totalApprovedMonetizedViews = 0;
+    let totalDirectApprovedUsd = 0;
+    let totalAdRevenueEvents = 0;
+
+    adEvents.forEach((ev: any) => {
+      const eventType = String(ev.eventType || ev.type || '').trim().toLowerCase();
+      const rawCreatorId = String(ev.creatorId || ev.userId || ev.uid || '').trim();
+      const canonicalCreatorId = rawCreatorId ? aliasToCanonical[rawCreatorId] : undefined;
+
+      if (eventType === 'view' || eventType === 'monetized_view' || eventType === 'video_view') {
+        // Count live monetized views ONLY for Approved (isMonetized == true) creators
+        if (canonicalCreatorId && approvedCanonicalIds.has(canonicalCreatorId)) {
+          const count = Number(ev.viewsCount ?? ev.count ?? 1) || 1;
+          viewsByCreator[canonicalCreatorId] = (viewsByCreator[canonicalCreatorId] || 0) + count;
+          totalApprovedMonetizedViews += count;
+        }
+        return;
+      }
+
+      if (eventType === 'ad_revenue' || eventType === 'ad_impression' || eventType === 'revenue') {
+        totalAdRevenueEvents += 1;
+        const currencyCode = String(ev.currencyCode || ev.currency || 'USD').trim().toUpperCase();
+        let amountUsd = 0;
+
+        if (ev.amountUsd !== undefined && ev.amountUsd !== null && !Number.isNaN(Number(ev.amountUsd))) {
+          amountUsd = Number(ev.amountUsd) || 0;
+        } else if (ev.valueMicros !== undefined && ev.valueMicros !== null) {
+          const rawVal = (Number(ev.valueMicros) || 0) / 1_000_000;
+          amountUsd = currencyCode === 'INR' ? rawVal / usdToInrRate : rawVal;
+        } else if (ev.amount !== undefined && ev.amount !== null) {
+          const rawVal = Number(ev.amount) || 0;
+          amountUsd = currencyCode === 'INR' ? rawVal / usdToInrRate : rawVal;
+        }
+
+        if (amountUsd <= 0) return;
+
+        if (canonicalCreatorId && approvedCanonicalIds.has(canonicalCreatorId)) {
+          directUsdByCreator[canonicalCreatorId] = (directUsdByCreator[canonicalCreatorId] || 0) + amountUsd;
+          totalDirectApprovedUsd += amountUsd;
+        } else {
+          // Feed / platform-level / unmatched ad revenue goes to the proportional feed pool
+          platformFeedPoolUsd += amountUsd;
+        }
+      }
+    });
+
+    const totalLiveAdMobGrossUsd = totalDirectApprovedUsd + platformFeedPoolUsd;
+    const adminPlatform60Usd = totalLiveAdMobGrossUsd * 0.6;
+
+    const perCreator: Record<
+      string,
+      {
+        isApproved: boolean;
+        monetizedViews: number;
+        viewShareRatio: number;
+        directUsd: number;
+        feedShareUsd: number;
+        gross100Usd: number;
+        creatorShare40Usd: number;
+        paidAmountUsd: number;
+        payableBalanceUsd: number;
+      }
+    > = {};
+
+    let totalCreators40Usd = 0;
+    let totalPaidOutUsd = 0;
+    let totalPayableBalanceUsd = 0;
+
+    approvedCanonicalIds.forEach((canonicalId) => {
+      const u = usersMap[canonicalId] || {};
+      const monetizedViews = viewsByCreator[canonicalId] || 0;
+      const viewShareRatio =
+        totalApprovedMonetizedViews > 0 ? monetizedViews / totalApprovedMonetizedViews : 0;
+      const directUsd = directUsdByCreator[canonicalId] || 0;
+      const feedShareUsd = platformFeedPoolUsd * viewShareRatio;
+      const gross100Usd = directUsd + feedShareUsd;
+      const creatorShare40Usd = gross100Usd * 0.4;
+      const paidAmountUsd = Math.max(0, Number(u.paidAmountUsd ?? u.paidAmount ?? 0) || 0);
+      const payableBalanceUsd = Math.max(0, creatorShare40Usd - paidAmountUsd);
+
+      perCreator[canonicalId] = {
+        isApproved: true,
+        monetizedViews,
+        viewShareRatio,
+        directUsd,
+        feedShareUsd,
+        gross100Usd,
+        creatorShare40Usd,
+        paidAmountUsd,
+        payableBalanceUsd,
+      };
+
+      totalCreators40Usd += creatorShare40Usd;
+      totalPaidOutUsd += paidAmountUsd;
+      totalPayableBalanceUsd += payableBalanceUsd;
+    });
+
+    const unallocatedFeedPoolUsd =
+      totalApprovedMonetizedViews === 0 && platformFeedPoolUsd > 0 ? platformFeedPoolUsd : 0;
+
+    return {
+      approvedCanonicalIds,
+      aliasToCanonical,
+      totalLiveAdMobGrossUsd,
+      totalDirectApprovedUsd,
+      platformFeedPoolUsd,
+      unallocatedFeedPoolUsd,
+      adminPlatform60Usd,
+      totalCreators40Usd,
+      totalPaidOutUsd,
+      totalPayableBalanceUsd,
+      totalApprovedMonetizedViews,
+      totalAdRevenueEvents,
+      perCreator,
+    };
+  }, [adEvents, usersMap, combinedRequests, usdToInrRate]);
 
   // Update Status in Firestore (Approve / Reject) & update user isMonetized
   const handleUpdateStatus = async (reqId: string, reqData: any, targetStatus: 'Approved' | 'Rejected') => {
     try {
-      // 1. Update monetization request doc if it came from monetization_requests
+      const targetUserId = reqData.userId || reqData.uid || (reqData.fromUserDoc ? reqId : '');
+      const resolvedUserDocId = (targetUserId && usersMap[targetUserId]?.docId) || targetUserId;
+      const isApproved = targetStatus === 'Approved';
+
+      // 1. Update monetization_requests doc (or create/merge for user-doc-only applications so both collections stay synced)
       if (!reqData.fromUserDoc) {
         await updateDoc(doc(db, 'monetization_requests', reqId), {
           status: targetStatus,
           reviewedAt: serverTimestamp()
         });
+      } else if (resolvedUserDocId) {
+        await setDoc(doc(db, 'monetization_requests', resolvedUserDocId), {
+          userId: resolvedUserDocId,
+          followersCount: reqData.followersCount || 0,
+          totalViews: reqData.totalViews || 0,
+          earnings: reqData.earnings || 0,
+          status: targetStatus,
+          reviewedAt: serverTimestamp(),
+          createdAt: serverTimestamp(),
+        }, { merge: true });
+      }
+
+      // Also sync any duplicate pending docs in monetization_requests for this user
+      if (targetUserId) {
+        const otherMatchingReqs = requests.filter(
+          (r) => r.id !== reqId && (r.userId === targetUserId || r.uid === targetUserId) && r.status !== targetStatus
+        );
+        await Promise.all(
+          otherMatchingReqs.map((r) =>
+            updateDoc(doc(db, 'monetization_requests', r.id), {
+              status: targetStatus,
+              reviewedAt: serverTimestamp(),
+            }).catch(() => {})
+          )
+        );
       }
 
       // 2. Update user monetization status in users collection
-      const targetUserId = reqData.userId;
-      if (targetUserId && usersMap[targetUserId]) {
-        try {
-          await updateDoc(doc(db, 'users', usersMap[targetUserId].docId || usersMap[targetUserId].id), {
-            monetizationStatus: targetStatus,
-            monetization: targetStatus === 'Approved' ? 'Active' : 'Rejected',
-            isMonetized: targetStatus === 'Approved',
-            updatedAt: serverTimestamp()
-          });
-        } catch (e) {
-          // ignore if doc id differs
-        }
+      const userPayload = {
+        monetizationStatus: targetStatus,
+        monetization: isApproved ? 'Active' : 'Rejected',
+        isMonetized: isApproved,
+        monetizationApproved: isApproved,
+        monetizationRejected: !isApproved,
+        monetizationApplied: false,
+        monetizationRequested: false,
+        monetizationReviewedAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+
+      const matchedUserDocId = targetUserId ? usersMap[targetUserId]?.docId : '';
+      if (matchedUserDocId) {
+        await updateDoc(doc(db, 'users', matchedUserDocId), userPayload);
+      } else if (resolvedUserDocId) {
+        await updateDoc(doc(db, 'users', resolvedUserDocId), userPayload).catch(() => {});
       }
 
       // 3. Send app notification (if collection is allowed in Rules)
@@ -1020,6 +1276,96 @@ export const MonetizationPage = () => {
     }
   };
 
+  // Open Payout Modal
+  const openPayoutModal = (req: any, userObj: any, metrics: any) => {
+    const balanceUsd = metrics?.payableBalanceUsd || 0;
+    setPayoutTarget({ req, user: userObj, metrics });
+    setPayoutAmountUsdInput(balanceUsd > 0 ? (balanceUsd < 0.01 ? balanceUsd.toFixed(4) : balanceUsd.toFixed(2)) : '0');
+    setPayoutRefInput('');
+  };
+
+  // Submit Payout ("Mark as Paid") -> updates paidAmount on users/{uid} + sends app notification
+  const handleConfirmPayout = async () => {
+    if (!payoutTarget) return;
+    const payoutUsd = parseFloat(payoutAmountUsdInput);
+    if (!Number.isFinite(payoutUsd) || payoutUsd <= 0) {
+      showToast('Please enter a valid payout amount greater than $0.');
+      return;
+    }
+
+    setPayoutSubmitting(true);
+    try {
+      const { req, user: u, metrics } = payoutTarget;
+      const targetUserId = u?.docId || req?.userId || u?.uid;
+      const previousPaidUsd = metrics?.paidAmountUsd || 0;
+      const newTotalPaidUsd = Number((previousPaidUsd + payoutUsd).toFixed(6));
+      const newTotalPaidInr = Number((newTotalPaidUsd * usdToInrRate).toFixed(2));
+      const payoutInr = Number((payoutUsd * usdToInrRate).toFixed(2));
+      const refText = payoutRefInput.trim();
+
+      if (targetUserId) {
+        await updateDoc(doc(db, 'users', targetUserId), {
+          paidAmount: newTotalPaidUsd,
+          paidAmountUsd: newTotalPaidUsd,
+          paidAmountInr: newTotalPaidInr,
+          lastPaidAt: serverTimestamp(),
+          lastPayoutAmountUsd: payoutUsd,
+          lastPayoutAmountInr: payoutInr,
+          lastPayoutRef: refText || null,
+          updatedAt: serverTimestamp(),
+        });
+      }
+
+      const recipientUid = u?.uid || u?.docId || req?.userId || targetUserId;
+      const payoutMessage = `Your creator payout of ${formatUsdAmount(payoutUsd)} (₹${payoutInr.toFixed(2)}) has been sent to your saved UPI / Bank account.${refText ? ` Ref: ${refText}` : ''}`;
+
+      try {
+        await addDoc(collection(db, 'notifications'), {
+          userId: recipientUid,
+          title: 'Payout Sent! 💸',
+          message: payoutMessage,
+          amountUsd: payoutUsd,
+          amountInr: payoutInr,
+          referenceId: refText || null,
+          createdAt: serverTimestamp(),
+          read: false,
+          type: 'payout_sent',
+        });
+      } catch {
+        // ignore if notifications rules reject write
+      }
+
+      // Local Simulator notification sync
+      const notifsKey = 'yousnap_user_app_notifications';
+      const existing = JSON.parse(localStorage.getItem(notifsKey) || '[]');
+      const newNotif = {
+        id: `NTF-PAY-${Date.now()}`,
+        userId: recipientUid,
+        title: 'Payout Sent! 💸',
+        message: payoutMessage,
+        createdAt: new Date().toISOString(),
+        timestamp: 'Just now',
+        category: 'Payout',
+      };
+      localStorage.setItem(notifsKey, JSON.stringify([newNotif, ...existing]));
+      window.dispatchEvent(new Event('yousnap_user_notification_sent'));
+
+      showToast(`Marked ${formatUsdAmount(payoutUsd)} (₹${payoutInr.toFixed(2)}) as Paid & notified creator!`);
+      setPayoutTarget(null);
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${payoutTarget?.user?.docId || 'payout'}`);
+      showToast('Failed to record payout — check Firestore Rules.');
+    } finally {
+      setPayoutSubmitting(false);
+    }
+  };
+
+  const handleCopyText = (label: string, value: string) => {
+    if (!value) return;
+    navigator.clipboard?.writeText(value);
+    showToast(`${label} copied: ${value}`);
+  };
+
   const filteredRequests = combinedRequests.filter(r => {
     if (statusFilter === 'All') return true;
     return r.status === statusFilter;
@@ -1030,42 +1376,131 @@ export const MonetizationPage = () => {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <DollarSign className="text-emerald-600" /> Monetization Applications
+            <DollarSign className="text-emerald-600" /> Monetization & Live AdMob Revenue Share (60% / 40%)
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Real-time creator payout requests from Cloud Firestore <code className="text-emerald-600 font-bold">/monetization_requests</code> collection
+            Live <code className="text-emerald-600 font-bold">/ad_events</code> AdMob income & monetized views — 60% Platform share & 40% Creator share (Approved users only)
           </p>
+        </div>
+
+        {/* USD to INR Exchange Rate Control */}
+        <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200 shadow-2xs">
+          <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">1 USD =</span>
+          <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2 py-1">
+            <span className="text-xs font-black text-emerald-600">₹</span>
+            <input
+              type="number"
+              min="1"
+              step="0.5"
+              value={usdToInrRate}
+              onChange={(e) => handleRateChange(e.target.value)}
+              aria-label="USD to INR Rate"
+              className="w-14 bg-transparent text-xs font-black text-slate-900 focus:outline-none text-right"
+            />
+          </div>
         </div>
       </div>
 
-      {/* Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
-          <p className="text-xs font-bold text-slate-400 uppercase">Total Applications</p>
-          <p className="text-2xl font-black text-slate-900 mt-1">{requests.length}</p>
-        </div>
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
-          <p className="text-xs font-bold text-amber-500 uppercase">Pending Review</p>
-          <p className="text-2xl font-black text-amber-600 mt-1">
-            {requests.filter(r => r.status === 'Pending').length}
+      {/* Live 60% / 40% Revenue Sharing Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-slate-900 text-white p-4 rounded-2xl border border-slate-800 shadow-sm">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Platform Revenue (My 60%)</p>
+            <TrendingUp size={16} className="text-emerald-400" />
+          </div>
+          <p className="text-2xl font-black mt-1.5 font-mono">
+            {formatUsdAmount(revenueSummary.adminPlatform60Usd)}
           </p>
+          <div className="flex items-center justify-between mt-1 text-[11px] text-slate-300">
+            <span className="font-bold text-emerald-300">
+              {formatInrAmount(revenueSummary.adminPlatform60Usd, usdToInrRate)}
+            </span>
+            <span className="text-slate-400">
+              100% Gross: {formatUsdAmount(revenueSummary.totalLiveAdMobGrossUsd)}
+            </span>
+          </div>
         </div>
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
-          <p className="text-xs font-bold text-emerald-500 uppercase">Approved Creators</p>
-          <p className="text-2xl font-black text-emerald-600 mt-1">
-            {requests.filter(r => r.status === 'Approved').length}
+
+        <div className="bg-white p-4 rounded-2xl border border-emerald-200 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-wider">Creators Share (40% Pool)</p>
+            <Wallet size={16} className="text-emerald-600" />
+          </div>
+          <p className="text-2xl font-black text-slate-900 mt-1.5 font-mono">
+            {formatUsdAmount(revenueSummary.totalCreators40Usd)}
           </p>
+          <div className="flex items-center justify-between mt-1 text-[11px]">
+            <span className="font-bold text-emerald-700">
+              {formatInrAmount(revenueSummary.totalCreators40Usd, usdToInrRate)}
+            </span>
+            <span className="font-bold text-amber-600">
+              Due: {formatUsdAmount(revenueSummary.totalPayableBalanceUsd)}
+            </span>
+          </div>
         </div>
+
         <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
-          <p className="text-xs font-bold text-rose-500 uppercase">Rejected</p>
-          <p className="text-2xl font-black text-rose-600 mt-1">
-            {requests.filter(r => r.status === 'Rejected').length}
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-bold text-indigo-600 uppercase tracking-wider">Live Monetized Views</p>
+            <Eye size={16} className="text-indigo-500" />
+          </div>
+          <p className="text-2xl font-black text-slate-900 mt-1.5">
+            {revenueSummary.totalApprovedMonetizedViews.toLocaleString()}
           </p>
+          <div className="flex items-center justify-between mt-1 text-[11px] text-slate-500">
+            <span>Approved creators only</span>
+            <span className="font-semibold text-slate-600">{revenueSummary.totalAdRevenueEvents} Ad Events</span>
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Creator Applications</p>
+          <div className="flex items-baseline gap-3 mt-1.5">
+            <p className="text-2xl font-black text-emerald-600">
+              {combinedRequests.filter(r => r.status === 'Approved').length}
+            </p>
+            <span className="text-xs font-bold text-slate-500">Approved</span>
+          </div>
+          <div className="flex items-center gap-3 mt-1 text-[11px] font-bold">
+            <span className="text-amber-600">
+              {combinedRequests.filter(r => r.status === 'Pending').length} Pending
+            </span>
+            <span className="text-slate-300">•</span>
+            <span className="text-rose-600">
+              {combinedRequests.filter(r => r.status === 'Rejected').length} Rejected
+            </span>
+            <span className="text-slate-300">•</span>
+            <span className="text-slate-500">
+              Paid: {formatUsdAmount(revenueSummary.totalPaidOutUsd)}
+            </span>
+          </div>
         </div>
       </div>
+
+      {/* Warning if /ad_events Firestore rules are not yet added or unallocated feed pool exists */}
+      {adEventsError && (
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3 text-xs text-amber-800">
+          <AlertTriangle size={18} className="shrink-0 text-amber-600 mt-0.5" />
+          <div>
+            <p className="font-bold">Live /ad_events Listener Notice</p>
+            <p className="text-[11px] text-amber-700 mt-0.5">
+              Could not read <code className="font-mono font-bold">/ad_events</code> ({adEventsError}). Make sure the <code className="font-mono font-bold">/ad_events</code> Firestore Rule is published in Firebase Console so live AdMob income &amp; monetized views load here.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {revenueSummary.unallocatedFeedPoolUsd > 0 && (
+        <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl flex items-center gap-3 text-xs text-blue-800">
+          <Sparkles size={16} className="shrink-0 text-blue-600" />
+          <p className="text-[11px]">
+            <span className="font-bold">{formatUsdAmount(revenueSummary.unallocatedFeedPoolUsd)}</span> ({formatInrAmount(revenueSummary.unallocatedFeedPoolUsd, usdToInrRate)}) in feed AdMob revenue is waiting in the pool and will automatically split 40% across Approved creators as soon as live monetized views arrive.
+          </p>
+        </div>
+      )}
 
       {/* Filter Tabs */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex items-center justify-between">
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs font-bold text-slate-500">Filter By Status:</p>
         <div className="flex items-center gap-2">
           {['All', 'Pending', 'Approved', 'Rejected'].map(st => (
@@ -1100,7 +1535,7 @@ export const MonetizationPage = () => {
         {loading ? (
           <div className="p-12 text-center">
             <RefreshCw className="animate-spin mx-auto text-emerald-500 mb-2" size={24} />
-            <p className="text-xs font-bold text-slate-600">Connecting to Firestore & loading requests...</p>
+            <p className="text-xs font-bold text-slate-600">Connecting to Firestore & loading live AdMob data...</p>
           </div>
         ) : filteredRequests.length === 0 ? (
           <div className="p-16 text-center">
@@ -1116,53 +1551,185 @@ export const MonetizationPage = () => {
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px]">
                 <tr>
                   <th className="py-3 px-4 font-black">Creator Profile</th>
-                  <th className="py-3 px-4 font-black">Followers Count</th>
-                  <th className="py-3 px-4 font-black">Total Views</th>
-                  <th className="py-3 px-4 font-black">Calculated Earnings</th>
-                  <th className="py-3 px-4 font-black">Request Status</th>
-                  <th className="py-3 px-4 font-black text-right">Approval Actions</th>
+                  <th className="py-3 px-4 font-black">Live Monetized Views</th>
+                  <th className="py-3 px-4 font-black">Calculated Earnings (40%)</th>
+                  <th className="py-3 px-4 font-black">UPI / Bank &amp; Balance</th>
+                  <th className="py-3 px-4 font-black">Status</th>
+                  <th className="py-3 px-4 font-black text-right">Actions &amp; Payout</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {filteredRequests.map(req => {
                   const u = usersMap[req.userId] || {
+                    docId: req.userId,
                     id: req.userId,
                     displayName: 'Creator User',
                     username: 'creator_user',
                     avatar: ''
                   };
+                  const canonicalId = u.docId || revenueSummary.aliasToCanonical[req.userId] || req.userId;
+                  const metrics = revenueSummary.perCreator[canonicalId];
+                  const isApprovedCreator = req.status === 'Approved' || Boolean(metrics?.isApproved);
+                  const payoutInfo = extractCreatorPayoutDetails(u);
+
+                  const liveMonetizedViews = isApprovedCreator ? (metrics?.monetizedViews || 0) : 0;
+                  const profileTotalViews = parseInt(req.totalViews ?? u.videoViewsCount ?? 0) || 0;
+                  const share40Usd = isApprovedCreator ? (metrics?.creatorShare40Usd || 0) : 0;
+                  const gross100Usd = isApprovedCreator ? (metrics?.gross100Usd || 0) : 0;
+                  const paidUsd = isApprovedCreator ? (metrics?.paidAmountUsd || 0) : 0;
+                  const balanceDueUsd = isApprovedCreator ? (metrics?.payableBalanceUsd || 0) : 0;
 
                   return (
-                    <tr key={req.id} className="hover:bg-slate-50/70 transition">
+                    <tr key={req.id} className="hover:bg-slate-50/70 transition align-top">
                       <td className="py-3.5 px-4">
                         <div 
                           onClick={() => setSelectedUserForModal(u)}
                           className="flex items-center gap-3 cursor-pointer group"
                         >
-                          <img 
-                            src={u.avatar || u.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80'} 
-                            alt={u.displayName || u.name} 
-                            className="w-10 h-10 rounded-xl object-cover border border-slate-200 group-hover:border-emerald-500 transition shadow-2xs" 
-                          />
+                          {u.avatar || u.photoURL ? (
+                            <img 
+                              src={u.avatar || u.photoURL} 
+                              alt={u.displayName || u.name} 
+                              className="w-10 h-10 rounded-xl object-cover border border-slate-200 group-hover:border-emerald-500 transition shadow-2xs shrink-0" 
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 font-black text-sm flex items-center justify-center border border-emerald-200 shrink-0">
+                              {(u.displayName || u.name || 'C').charAt(0).toUpperCase()}
+                            </div>
+                          )}
                           <div>
                             <p className="font-bold text-slate-900 group-hover:text-emerald-600 transition text-xs">
                               {u.displayName || u.name || 'Creator'}
                             </p>
                             <p className="text-[11px] text-slate-500">
-                              @{u.username || 'user'} • <span className="font-mono text-emerald-600">{req.userId}</span>
+                              @{u.username || 'user'} • {(parseInt(req.followersCount ?? u.followersCount ?? 0) || 0).toLocaleString()} followers
                             </p>
+                            <p className="text-[10px] font-mono text-slate-400">{req.userId}</p>
                           </div>
                         </div>
                       </td>
-                      <td className="py-3.5 px-4 font-semibold text-slate-700">
-                        {(parseInt(req.followersCount) || 0).toLocaleString()} followers
+
+                      {/* Live Monetized Views */}
+                      <td className="py-3.5 px-4">
+                        {isApprovedCreator ? (
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-black text-slate-900 text-xs">
+                                {liveMonetizedViews.toLocaleString()}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[9px] font-black uppercase">
+                                Live
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              Profile views: {profileTotalViews.toLocaleString()}
+                            </p>
+                            {revenueSummary.totalApprovedMonetizedViews > 0 && (
+                              <p className="text-[10px] font-semibold text-indigo-600 mt-0.5">
+                                {((metrics?.viewShareRatio || 0) * 100).toFixed(1)}% feed share
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="font-bold text-slate-400">0 live views</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">
+                              Profile views: {profileTotalViews.toLocaleString()}
+                            </p>
+                          </div>
+                        )}
                       </td>
-                      <td className="py-3.5 px-4 font-semibold text-slate-700">
-                        {(parseInt(req.totalViews) || 0).toLocaleString()} views
+
+                      {/* Calculated Earnings (Direct 40% Creator Share in USD + INR) */}
+                      <td className="py-3.5 px-4">
+                        {isApprovedCreator ? (
+                          <div>
+                            <div className="flex items-baseline gap-1.5">
+                              <span className="font-mono font-black text-emerald-600 text-sm">
+                                {formatUsdAmount(share40Usd)}
+                              </span>
+                              <span className="font-mono font-bold text-slate-700 text-xs">
+                                ({formatInrAmount(share40Usd, usdToInrRate)})
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              100% Gross: <span className="font-mono font-semibold">{formatUsdAmount(gross100Usd)}</span>
+                            </p>
+                            {gross100Usd > 0 && (
+                              <p className="text-[9px] text-slate-400">
+                                Direct {formatUsdAmount(metrics?.directUsd || 0)} + Feed {formatUsdAmount(metrics?.feedShareUsd || 0)}
+                              </p>
+                            )}
+                          </div>
+                        ) : (
+                          <div>
+                            <p className="font-mono font-bold text-slate-400 text-xs">$0.00 (₹0.00)</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5">Approved only</p>
+                          </div>
+                        )}
                       </td>
-                      <td className="py-3.5 px-4 font-mono font-black text-emerald-600 text-[13px]">
-                        ${parseFloat(req.earnings || 0).toFixed(2)}
+
+                      {/* UPI / Bank Details & Remaining Balance */}
+                      <td className="py-3.5 px-4 max-w-[230px]">
+                        <div className="space-y-1">
+                          {payoutInfo.hasDetails ? (
+                            <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 space-y-0.5">
+                              {payoutInfo.upiId && (
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-[10px] font-bold text-slate-700 truncate flex items-center gap-1">
+                                    <CreditCard size={10} className="text-emerald-600 shrink-0" />
+                                    {payoutInfo.upiId}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyText('UPI ID', payoutInfo.upiId)}
+                                    className="text-slate-400 hover:text-emerald-600 p-0.5 shrink-0"
+                                    title="Copy UPI ID"
+                                  >
+                                    <Copy size={11} />
+                                  </button>
+                                </div>
+                              )}
+                              {payoutInfo.bankAccount && (
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="text-[10px] text-slate-600 font-mono truncate flex items-center gap-1">
+                                    <Landmark size={10} className="text-slate-500 shrink-0" />
+                                    {payoutInfo.bankAccount}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleCopyText('Account No', payoutInfo.bankAccount)}
+                                    className="text-slate-400 hover:text-emerald-600 p-0.5 shrink-0"
+                                    title="Copy Account Number"
+                                  >
+                                    <Copy size={11} />
+                                  </button>
+                                </div>
+                              )}
+                              {(payoutInfo.ifscCode || payoutInfo.accountHolderName) && (
+                                <p className="text-[9px] text-slate-500 truncate">
+                                  {[payoutInfo.accountHolderName, payoutInfo.ifscCode].filter(Boolean).join(' • ')}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-400 italic">No UPI / Bank saved yet</p>
+                          )}
+
+                          {isApprovedCreator && (
+                            <div className="flex items-center justify-between text-[10px] pt-0.5">
+                              <span className="text-slate-500">
+                                Paid: <span className="font-mono font-semibold text-slate-700">{formatUsdAmount(paidUsd)}</span>
+                              </span>
+                              <span className={`font-mono font-black ${balanceDueUsd > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                                Due: {formatUsdAmount(balanceDueUsd)} ({formatInrAmount(balanceDueUsd, usdToInrRate)})
+                              </span>
+                            </div>
+                          )}
+                        </div>
                       </td>
+
+                      {/* Request Status */}
                       <td className="py-3.5 px-4">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full font-bold text-[10px] ${
                           req.status === 'Approved' 
@@ -1177,22 +1744,38 @@ export const MonetizationPage = () => {
                           {req.status || 'Pending'}
                         </span>
                       </td>
+
+                      {/* Approval & Mark as Paid Actions */}
                       <td className="py-3.5 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => handleUpdateStatus(req.id, req, 'Approved')}
-                            disabled={req.status === 'Approved'}
-                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-[11px] font-bold transition flex items-center gap-1 shadow-2xs"
-                          >
-                            <Check size={12} /> Approve
-                          </button>
-                          <button
-                            onClick={() => handleUpdateStatus(req.id, req, 'Rejected')}
-                            disabled={req.status === 'Rejected'}
-                            className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white rounded-lg text-[11px] font-bold transition flex items-center gap-1 shadow-2xs"
-                          >
-                            <X size={12} /> Reject
-                          </button>
+                        <div className="flex flex-col items-end gap-1.5">
+                          {isApprovedCreator && (
+                            <button
+                              onClick={() => openPayoutModal(req, u, metrics)}
+                              className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition flex items-center gap-1 shadow-2xs ${
+                                balanceDueUsd > 0
+                                  ? 'bg-slate-900 hover:bg-slate-800 text-white'
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                              }`}
+                            >
+                              <Wallet size={12} /> Mark as Paid
+                            </button>
+                          )}
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button
+                              onClick={() => handleUpdateStatus(req.id, req, 'Approved')}
+                              disabled={req.status === 'Approved'}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-[11px] font-bold transition flex items-center gap-1 shadow-2xs"
+                            >
+                              <Check size={12} /> Approve
+                            </button>
+                            <button
+                              onClick={() => handleUpdateStatus(req.id, req, 'Rejected')}
+                              disabled={req.status === 'Rejected'}
+                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white rounded-lg text-[11px] font-bold transition flex items-center gap-1 shadow-2xs"
+                            >
+                              <X size={12} /> Reject
+                            </button>
+                          </div>
                         </div>
                       </td>
                     </tr>
@@ -1203,6 +1786,164 @@ export const MonetizationPage = () => {
           </div>
         )}
       </div>
+
+      {/* Mark as Paid Confirmation Modal */}
+      {payoutTarget && (() => {
+        const { user: u, metrics } = payoutTarget;
+        const payoutInfo = extractCreatorPayoutDetails(u);
+        const parsedUsd = parseFloat(payoutAmountUsdInput) || 0;
+        const parsedInr = parsedUsd * usdToInrRate;
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                    <Wallet size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-slate-900">Record Creator Payout</h3>
+                    <p className="text-[11px] text-slate-500">
+                      {u.displayName || u.name || 'Creator'} (@{u.username || 'user'})
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setPayoutTarget(null)}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Saved UPI / Bank Info */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5 space-y-1.5 text-xs">
+                <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Saved UPI / Bank Details</p>
+                {payoutInfo.hasDetails ? (
+                  <>
+                    {payoutInfo.upiId && (
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-800">UPI: {payoutInfo.upiId}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyText('UPI ID', payoutInfo.upiId)}
+                          className="text-emerald-600 hover:underline text-[11px] font-bold flex items-center gap-1"
+                        >
+                          <Copy size={11} /> Copy
+                        </button>
+                      </div>
+                    )}
+                    {payoutInfo.bankAccount && (
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono text-slate-700">A/C: {payoutInfo.bankAccount}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopyText('Account No', payoutInfo.bankAccount)}
+                          className="text-emerald-600 hover:underline text-[11px] font-bold flex items-center gap-1"
+                        >
+                          <Copy size={11} /> Copy
+                        </button>
+                      </div>
+                    )}
+                    {(payoutInfo.accountHolderName || payoutInfo.ifscCode || payoutInfo.bankName) && (
+                      <p className="text-[11px] text-slate-500">
+                        {[payoutInfo.accountHolderName, payoutInfo.bankName, payoutInfo.ifscCode].filter(Boolean).join(' • ')}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[11px] text-amber-600 font-semibold">
+                    Creator has not saved UPI / Bank details yet.
+                  </p>
+                )}
+              </div>
+
+              {/* Earnings Breakdown */}
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100">
+                  <p className="text-[10px] text-slate-400 font-bold uppercase">40% Earned</p>
+                  <p className="text-xs font-black font-mono text-slate-900 mt-0.5">
+                    {formatUsdAmount(metrics?.creatorShare40Usd || 0)}
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    {formatInrAmount(metrics?.creatorShare40Usd || 0, usdToInrRate)}
+                  </p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-2.5 border border-slate-100">
+                  <p className="text-[10px] text-slate-400 font-bold uppercase">Already Paid</p>
+                  <p className="text-xs font-black font-mono text-slate-700 mt-0.5">
+                    {formatUsdAmount(metrics?.paidAmountUsd || 0)}
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    {formatInrAmount(metrics?.paidAmountUsd || 0, usdToInrRate)}
+                  </p>
+                </div>
+                <div className="bg-emerald-50 rounded-xl p-2.5 border border-emerald-200">
+                  <p className="text-[10px] text-emerald-700 font-bold uppercase">Balance Due</p>
+                  <p className="text-xs font-black font-mono text-emerald-700 mt-0.5">
+                    {formatUsdAmount(metrics?.payableBalanceUsd || 0)}
+                  </p>
+                  <p className="text-[10px] text-emerald-600 font-bold">
+                    {formatInrAmount(metrics?.payableBalanceUsd || 0, usdToInrRate)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Amount Input */}
+              <div className="space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-bold text-slate-700">Payout Amount (USD)</label>
+                    <span className="text-xs font-black text-emerald-600">
+                      ≈ ₹{parsedInr.toFixed(2)}
+                    </span>
+                  </div>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={payoutAmountUsdInput}
+                    onChange={(e) => setPayoutAmountUsdInput(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm font-mono font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Transaction / UTR Reference (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. UPI Ref 4321987654"
+                    value={payoutRefInput}
+                    onChange={(e) => setPayoutRefInput(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-xs text-slate-900 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPayoutTarget(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={payoutSubmitting || parsedUsd <= 0}
+                  onClick={handleConfirmPayout}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white shadow-sm flex items-center gap-1.5"
+                >
+                  {payoutSubmitting ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+                  Confirm &amp; Mark as Paid
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* User Details Modal when Creator Profile is clicked */}
       <UserDetailsModal 
@@ -1222,3 +1963,4 @@ export const MonetizationPage = () => {
     </div>
   );
 };
+

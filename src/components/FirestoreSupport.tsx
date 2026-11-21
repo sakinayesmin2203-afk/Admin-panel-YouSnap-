@@ -24,7 +24,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import UserDetailsModal from './UserDetailsModal';
-import { buildUsersLookupMap, normalizeUserDoc, toMillis } from '../lib/firestoreAdapters';
+import { buildUsersLookupMap, isAppReportDoc, normalizeUserDoc, toMillis } from '../lib/firestoreAdapters';
 
 function isAppealCategory(cat: string): boolean {
   const c = (cat || '').toLowerCase();
@@ -73,6 +73,7 @@ export default function FirestoreSupport() {
       q,
       (snapshot) => {
         const data = snapshot.docs
+          .filter((docSnap) => !isAppReportDoc(docSnap.data(), 'support_tickets'))
           .map((docSnap) => {
             const raw = docSnap.data();
             return {
@@ -223,7 +224,6 @@ export default function FirestoreSupport() {
   const categoryTabs = [
     { label: 'All', value: 'All' },
     { label: 'Suspension Appeals', value: 'Suspension Appeal' },
-    { label: 'Reports & Violations', value: 'Reports & Violations' },
     { label: 'Monetization Issues', value: 'Monetization Issues' },
     { label: 'General', value: 'General & App Bugs' },
   ];

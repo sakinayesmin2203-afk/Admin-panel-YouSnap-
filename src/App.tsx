@@ -10,11 +10,12 @@ import VideoPreviewModal from './components/VideoPreviewModal';
 import { UsersPage, VideosPage, MonetizationPage } from './components/FirestorePages';
 import FirestoreDashboard from './components/FirestoreDashboard';
 import FirestoreRestrictedAccounts from './components/FirestoreRestrictedAccounts';
+import FirestoreReports from './components/FirestoreReports';
 import FirestoreSupport from './components/FirestoreSupport';
 import FirestoreNotifications from './components/FirestoreNotifications';
 import { initFirestoreSeedIfNeeded } from './lib/firestoreSeeder';
-import { db, auth, signOut, onAuthStateChanged } from '../lib/firebase';
-import { collection, onSnapshot, query } from 'firebase/firestore';
+import { useAdminActivityNotifications } from './lib/useAdminActivityNotifications';
+import { auth, signOut, onAuthStateChanged } from '../lib/firebase';
 import { AlertTriangle, CheckCircle2, Trash2, Send } from 'lucide-react';
 import AdminLogin from './components/AdminLogin';
 
@@ -31,7 +32,17 @@ export default function App() {
   const [deleteModalVideo, setDeleteModalVideo] = useState<ModerationItem | null>(null);
   const [warningReason, setWarningReason] = useState<string>('');
   const [actionNoticeToast, setActionNoticeToast] = useState<string | null>(null);
-  const [firestoreUnreadCount, setFirestoreUnreadCount] = useState(0);
+
+  const {
+    notifications: liveNotifications,
+    unreadCount: liveUnreadCount,
+    loading: notificationsLoading,
+    toggleRead,
+    markAsReadById,
+    markAllAsRead,
+    deleteNotification,
+    clearReadNotifications,
+  } = useAdminActivityNotifications(isAuthenticated);
 
   // Track real Firebase Auth session so Firestore rules (`request.auth != null`) succeed
   useEffect(() => {
@@ -54,24 +65,6 @@ export default function App() {
 
     return () => unsubAuth();
   }, []);
-
-  // Attach admin_notifications listener only after Firebase Auth is signed in
-  useEffect(() => {
-    if (!isAuthenticated || !auth.currentUser) return;
-
-    const unsub = onSnapshot(
-      query(collection(db, 'admin_notifications')),
-      (snapshot) => {
-        const unread = snapshot.docs.filter(d => d.data().unread).length;
-        setFirestoreUnreadCount(unread);
-      },
-      () => {
-        setFirestoreUnreadCount(0);
-      }
-    );
-
-    return () => unsub();
-  }, [isAuthenticated]);
 
   const handleAdminLogin = (email: string) => {
     setIsAuthenticated(true);
@@ -133,6 +126,8 @@ export default function App() {
         return <UsersPage />;
       case 'Videos':
         return <VideosPage />;
+      case 'Reports':
+        return <FirestoreReports />;
       case 'Restricted Accounts':
         return <FirestoreRestrictedAccounts />;
       case 'Monetization':
@@ -140,7 +135,18 @@ export default function App() {
       case 'Support':
         return <FirestoreSupport />;
       case 'Notifications':
-        return <FirestoreNotifications onNavigate={setActiveView} />;
+        return (
+          <FirestoreNotifications
+            onNavigate={setActiveView}
+            notifications={liveNotifications}
+            loading={notificationsLoading}
+            onToggleRead={toggleRead}
+            onMarkAsReadById={markAsReadById}
+            onMarkAllAsRead={markAllAsRead}
+            onDeleteNotification={deleteNotification}
+            onClearRead={clearReadNotifications}
+          />
+        );
       default:
         return (
           <div className="text-2xl font-bold p-10 bg-white rounded-2xl shadow-sm border border-slate-100">
@@ -155,7 +161,7 @@ export default function App() {
       <Sidebar activeView={activeView} onNavigate={setActiveView} onLogout={handleAdminLogout} />
       <div className="flex-1 flex flex-col min-w-0">
         <Header 
-          unreadCount={firestoreUnreadCount} 
+          unreadCount={liveUnreadCount} 
           onBellClick={() => setActiveView('Notifications')} 
         />
         <main className="p-6 relative flex-1">

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { db } from '../../lib/firebase';
 import { collection, onSnapshot, query } from 'firebase/firestore';
+import { isMediaDeleted } from '../lib/firestoreAdapters';
 
 export default function AnalyticsChart() {
   const [counts, setCounts] = useState<Record<string, number>>({
@@ -25,7 +26,8 @@ export default function AnalyticsChart() {
       onSnapshot(
         query(collection(db, col)),
         (snapshot) => {
-          setCounts((prev) => ({ ...prev, [label]: snapshot.size }));
+          const activeCount = snapshot.docs.filter((d) => !isMediaDeleted(d.data())).length;
+          setCounts((prev) => ({ ...prev, [label]: activeCount }));
         },
         () => {}
       )
