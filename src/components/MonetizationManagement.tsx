@@ -489,7 +489,7 @@ export default function MonetizationManagement() {
   const activeMonetizedCount = records.filter(r => r.status === 'Active').length;
   const pendingCount = records.filter(r => r.status === 'Pending').length;
 
-  // Dynamic Sum/Calculate (যোগ) of Creator Earnings using State Array Reduce Function
+  // Dynamic Sum/Calculate of Creator Earnings using State Array Reduce Function
   const totalCreatorEarnings = records.reduce((acc, r) => {
     const stats = getCreatorOrganicStats(r);
     // Sum up the organicReferenceAmount for active, pending or already disbursed creators
@@ -2286,7 +2286,7 @@ export default function MonetizationManagement() {
                   onClick={handleExecutePayoutDisbursement}
                   className="px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-xl text-xs transition shadow-md active:scale-95 flex items-center gap-1.5"
                 >
-                  <DollarSign size={15} /> Confirm & Release Payout (পইচা ৰিলিজ কৰক)
+                  <DollarSign size={15} /> Confirm & Release Payout
                 </button>
               </div>
 

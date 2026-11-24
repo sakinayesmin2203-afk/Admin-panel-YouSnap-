@@ -4,7 +4,11 @@ import {
   collection, 
   doc, 
   onSnapshot, 
-  query 
+  query,
+  updateDoc,
+  increment,
+  serverTimestamp,
+  addDoc
 } from 'firebase/firestore';
 import { 
   Smartphone, 
@@ -21,7 +25,9 @@ import {
   X, 
   ShieldAlert, 
   Play,
-  RotateCcw
+  RotateCcw,
+  Heart,
+  Eye
 } from 'lucide-react';
 
 interface YouSnapSimulatorProps {
@@ -150,20 +156,34 @@ export default function YouSnapSimulator({ isOpen, onClose, onNewSupportTicket }
       }
     };
 
-    // Boosted sample video in feed
-    setBoostedVideos([
-      {
-        id: 'vid-1',
-        title: 'Amazing Guwahati Street Food Vlog',
-        uploader: 'Sakin Yesmin',
-        views: '636.3K',
-        boosted: true
-      }
-    ]);
+    // Live media feed items from Firestore
+    const unsubsMedia = ['posts', 'reels', 'videos'].map((colName) =>
+      onSnapshot(query(collection(db, colName)), (snapshot) => {
+        const docs = snapshot.docs.map(d => {
+          const data = d.data();
+          return {
+            id: d.id,
+            docId: d.id,
+            sourceCollection: colName,
+            title: data.caption || data.title || 'YouSnap Media',
+            uploader: data.uploader || data.username || 'Creator',
+            views: Number(data.views ?? data.viewsCount ?? 120),
+            likes: Number(data.likes ?? data.likesCount ?? 14),
+            thumbnail: data.thumbnailURL || data.mediaUrl || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=400&auto=format&fit=crop&q=80',
+            ...data
+          };
+        });
+        setBoostedVideos(prev => {
+          const others = prev.filter(p => p.sourceCollection !== colName);
+          return [...others, ...docs];
+        });
+      }, () => {})
+    );
 
     return () => {
       unsubUser();
       unsubNotifs();
+      unsubsMedia.forEach(u => u());
     };
   }, [isOpen, selectedUserId]);
 
@@ -298,7 +318,7 @@ export default function YouSnapSimulator({ isOpen, onClose, onNewSupportTicket }
 
                 <div className="w-full bg-slate-900 border border-slate-800 p-4 rounded-2xl space-y-2 text-left">
                   <p className="text-[10px] font-black text-rose-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <AlertTriangle size={12} /> Violation Notice (কাৰণ):
+                    <AlertTriangle size={12} /> Violation Notice:
                   </p>
                   <p className="text-xs text-slate-200 leading-relaxed font-semibold italic">
                     "{userState?.suspensionReason || 'Violation of platform terms of service.'}"
@@ -372,36 +392,102 @@ export default function YouSnapSimulator({ isOpen, onClose, onNewSupportTicket }
                     <span className="text-[9px] text-emerald-400 font-bold">Algorithm Feed</span>
                   </div>
 
-                  {boostedVideos.map((vid) => (
-                    <div 
-                      key={vid.id} 
-                      className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg relative group"
-                    >
-                      {vid.boosted && (
-                        <div className="absolute top-2 left-2 z-10 bg-amber-500 text-white text-[8px] font-extrabold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-md">
-                          <Sparkles size={9} /> VIRAL BOOST 10X
+                  {boostedVideos.map((vid) => {
+                    const col = vid.sourceCollection || 'posts';
+                    const docId = vid.docId || vid.id;
+                    const handleLike = async (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      try {
+                        await updateDoc(doc(db, col, docId), {
+                          likes: increment(1),
+                          likesCount: increment(1)
+                        });
+                        await addDoc(collection(db, 'ad_events'), {
+                          eventType: 'like',
+                          sourceCollection: col,
+                          mediaId: docId,
+                          creatorId: vid.userId || 'platform',
+                          createdAt: serverTimestamp()
+                        });
+                        await addDoc(collection(db, 'admin_notifications'), {
+                          type: 'Security',
+                          targetUser: userState?.name || 'User',
+                          message: `Liked ${col === 'posts' ? 'photo post' : 'video'} "${vid.title || docId}"`,
+                          unread: true,
+                          createdAt: serverTimestamp(),
+                          linkTo: 'Videos'
+                        });
+                      } catch (err) {
+                        console.error('Like error:', err);
+                      }
+                    };
+
+                    const handleView = async (e: React.MouseEvent) => {
+                      e.stopPropagation();
+                      try {
+                        await updateDoc(doc(db, col, docId), {
+                          views: increment(1),
+                          viewsCount: increment(1)
+                        });
+                        await addDoc(collection(db, 'ad_events'), {
+                          eventType: 'view',
+                          sourceCollection: col,
+                          mediaId: docId,
+                          creatorId: vid.userId || 'platform',
+                          createdAt: serverTimestamp()
+                        });
+                      } catch (err) {
+                        console.error('View error:', err);
+                      }
+                    };
+
+                    return (
+                      <div 
+                        key={docId} 
+                        onClick={handleView}
+                        className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg relative group cursor-pointer"
+                        title="Click to simulate a view"
+                      >
+                        {vid.boosted && (
+                          <div className="absolute top-2 left-2 z-10 bg-amber-500 text-white text-[8px] font-extrabold px-2 py-0.5 rounded-md flex items-center gap-1 shadow-md">
+                            <Sparkles size={9} /> VIRAL BOOST
+                          </div>
+                        )}
+                        
+                        <div className="h-32 bg-slate-800 relative flex items-center justify-center overflow-hidden">
+                          <img 
+                            src={vid.thumbnail || vid.thumbnailURL || vid.mediaUrl || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=400&auto=format&fit=crop&q=80'} 
+                            alt="Thumbnail" 
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                          />
+                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                            <div className="w-9 h-9 rounded-full bg-white/20 backdrop-blur-xs flex items-center justify-center text-white">
+                              <Play size={16} className="fill-white ml-0.5" />
+                            </div>
+                          </div>
                         </div>
-                      )}
-                      
-                      <div className="h-32 bg-slate-800 relative flex items-center justify-center overflow-hidden">
-                        <img 
-                          src="https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=400&auto=format&fit=crop&q=80" 
-                          alt="Thumbnail" 
-                          className="w-full h-full object-cover"
-                        />
-                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                          <div className="w-10 h-10 rounded-full bg-white/20 backdrop-blur-xs flex items-center justify-center text-white">
-                            <Play size={18} className="fill-white ml-0.5" />
+
+                        <div className="p-2.5 space-y-1.5">
+                          <p className="text-xs font-bold text-slate-100 truncate">{vid.title || vid.caption}</p>
+                          <div className="flex items-center justify-between text-[10px] text-slate-400">
+                            <span>by {vid.uploader || 'Creator'}</span>
+                            <div className="flex items-center gap-3">
+                              <span className="flex items-center gap-1 text-emerald-400">
+                                <Eye size={11} /> {typeof vid.views === 'number' ? vid.views.toLocaleString() : vid.views}
+                              </span>
+                              <button 
+                                onClick={handleLike}
+                                className="flex items-center gap-1 text-rose-400 hover:text-rose-300 transition p-1 bg-slate-800/80 rounded-lg"
+                                title="Click to Like"
+                              >
+                                <Heart size={11} className="fill-rose-400" /> {typeof vid.likes === 'number' ? vid.likes.toLocaleString() : vid.likes}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>
-
-                      <div className="p-2.5">
-                        <p className="text-xs font-bold text-slate-100 truncate">{vid.title}</p>
-                        <p className="text-[9px] text-slate-400 mt-0.5">by {vid.uploader} • {vid.views} views</p>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 

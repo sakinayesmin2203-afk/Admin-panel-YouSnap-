@@ -593,7 +593,7 @@ export default function FirestoreReports() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="inline-flex items-center gap-1.5 text-[11px] font-black text-rose-700 uppercase tracking-wider">
                         <MessageSquareWarning size={13} />
-                        User Report Reason (কাৰণ) • {rep.reportCategory}
+                        User Report Reason • {rep.reportCategory}
                       </span>
                       <span className="text-[10px] text-slate-400 font-mono">
                         {rep.timeLabel} • /{rep.sourceCollection}
@@ -656,7 +656,7 @@ export default function FirestoreReports() {
             <form onSubmit={handleConfirmRestrictMedia} className="space-y-4 text-xs">
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
-                  Restriction Reason (কাৰণ):
+                  Restriction Reason:
                 </label>
                 <textarea
                   rows={3}

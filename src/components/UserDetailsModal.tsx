@@ -131,10 +131,10 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
 
   // Preset reasons for quick administrative selection
   const PRESET_REASONS = [
-    'Copyright Infringement (কপিৰাইট উলংঘন)',
-    'Community Guidelines Violation (কমিউনিটি নিৰ্দেশনা উলংঘন)',
-    'Spam & Deceptive Metadata (স্পাম বা ভুৱা মেটাডাটা)',
-    'Inappropriate / NSFW Content (আপত্তিজনক সামগ্ৰী)'
+    'Copyright Infringement',
+    'Community Guidelines Violation',
+    'Spam & Deceptive Metadata',
+    'Inappropriate / NSFW Content'
   ];
 
   const handleOpenReasonModal = (type: 'Suspend' | 'Ban') => {
@@ -352,6 +352,12 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
   const totalEarnings = currentUserData.totalEarnings ?? currentUserData.earnings ?? '₹0';
   const followersCount = Number(currentUserData.followersCount ?? currentUserData.followers ?? 0).toLocaleString();
   const createdDate = currentUserData.joinedDate || (currentUserData.createdAt?.toDate ? currentUserData.createdAt.toDate().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : (currentUserData.monetizationStatus ? `Monetization: ${currentUserData.monetizationStatus}` : 'Active Member'));
+  
+  const totalViewsCount = React.useMemo(() => {
+    const sumFromMedia = userMedia.reduce((acc, m) => acc + (parseInt(m.views) || 0), 0);
+    const profileViews = Number(currentUserData.videoViewsCount ?? currentUserData.totalViews ?? 0);
+    return Math.max(sumFromMedia, profileViews);
+  }, [userMedia, currentUserData]);
 
   return (
     <div className="fixed inset-0 z-[100] bg-slate-950/90 backdrop-blur-md overflow-y-auto flex flex-col p-0 sm:p-4 lg:p-6 animate-in fade-in duration-200">
@@ -445,12 +451,12 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
         {/* User Content Body */}
         <div className="p-6 sm:p-8 space-y-6 bg-slate-50 flex-1">
           
-          {/* 4 Detail Metrics */}
+          {/* Detail Metrics */}
           <div>
             <h3 className="text-xs font-black uppercase tracking-wider text-slate-500 mb-3">
               Account Performance & Overview
             </h3>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
               
               <div className="bg-white p-4.5 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
                 <div className="w-9 h-9 rounded-xl bg-sky-50 text-sky-600 flex items-center justify-center mb-2">
@@ -459,6 +465,15 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
                 <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Videos</p>
                 <p className="text-2xl font-black text-slate-900 font-mono">{userMedia.length || totalVideos}</p>
                 <p className="text-[10px] text-sky-600 font-semibold">Uploaded to platform</p>
+              </div>
+
+              <div className="bg-white p-4.5 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-2">
+                  <Eye size={18} />
+                </div>
+                <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Views</p>
+                <p className="text-2xl font-black text-slate-900 font-mono">{totalViewsCount.toLocaleString()}</p>
+                <p className="text-[10px] text-indigo-600 font-semibold">Across all uploads</p>
               </div>
 
               <div className="bg-white p-4.5 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
@@ -506,7 +521,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
               </div>
 
               <div className="bg-white/80 p-3.5 rounded-xl border border-slate-200/60 space-y-1 text-xs">
-                <p className="font-bold text-slate-700">Reason (কাৰণ):</p>
+                <p className="font-bold text-slate-700">Reason:</p>
                 <p className="font-medium text-slate-900 italic leading-relaxed">
                   "{currentUserData.suspendReason || currentUserData.banReason || 'Violation of YouSnap safety, copyright, and community standards.'}"
                 </p>
@@ -609,7 +624,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
                   className="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-extrabold rounded-xl text-xs transition shadow-sm active:scale-95 flex items-center gap-2"
                 >
                   {isSubmitting ? <RefreshCw className="animate-spin" size={16} /> : <CheckCircle2 size={16} />}
-                  <span>Unsuspend / Unban Account (একাউণ্ট আনব্লক কৰক)</span>
+                  <span>Unsuspend / Unban Account</span>
                 </button>
               ) : (
                 <>
@@ -618,7 +633,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
                     className="px-5 py-3 bg-amber-500 hover:bg-amber-600 text-white font-extrabold rounded-xl text-xs transition shadow-sm active:scale-95 flex items-center gap-2"
                   >
                     <AlertTriangle size={16} />
-                    <span>Suspend Account (কাৰণ সহ ছাসপেণ্ড কৰক)</span>
+                    <span>Suspend Account</span>
                   </button>
 
                   <button
@@ -626,7 +641,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
                     className="px-5 py-3 bg-rose-600 hover:bg-rose-700 text-white font-extrabold rounded-xl text-xs transition shadow-sm active:scale-95 flex items-center gap-2"
                   >
                     <Ban size={16} />
-                    <span>Ban Account (কাৰণ সহ ব্যান কৰক)</span>
+                    <span>Ban Account</span>
                   </button>
                 </>
               )}
@@ -636,7 +651,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
                 className="px-5 py-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-extrabold rounded-xl text-xs transition active:scale-95 flex items-center gap-2"
               >
                 <Trash2 size={16} />
-                <span>Delete User (একাউণ্ট ডিলিট কৰক)</span>
+                <span>Delete User</span>
               </button>
 
               <button
@@ -758,12 +773,12 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
             <form onSubmit={handleConfirmRestriction} className="space-y-4 text-xs">
               <div>
                 <label className="block text-slate-700 font-bold mb-1">
-                  Enter Custom Reason (কাৰণ টাইপ কৰক):
+                  Enter Custom Reason:
                 </label>
                 <textarea 
                   rows={3}
                   required
-                  placeholder={`টাইপ কৰক কিয় এই ইউজাৰজনক ${actionType.toLowerCase()} কৰা হৈছে...`}
+                  placeholder={`Enter why this user is being ${actionType.toLowerCase()}ed...`}
                   value={customReason}
                   onChange={(e) => setCustomReason(e.target.value)}
                   className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-900 outline-none focus:ring-2 focus:ring-amber-500 placeholder-slate-400 leading-relaxed"
@@ -772,7 +787,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
 
               <div>
                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-2">
-                  Quick Reason Presets (ক্ষিপ্ৰ নিৰ্বাচন):
+                  Quick Reason Presets:
                 </p>
                 <div className="flex flex-wrap gap-1.5">
                   {PRESET_REASONS.map((preset) => (

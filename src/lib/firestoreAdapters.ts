@@ -10,6 +10,7 @@ import {
   addDoc,
   serverTimestamp,
 } from 'firebase/firestore';
+import { sanitizeHttpsUrl } from './security';
 
 export type MediaSourceCollection = 'posts' | 'reels' | 'stories' | 'videos' | 'live_uploads';
 
@@ -56,7 +57,7 @@ export function normalizeUserDoc(docSnap: QueryDocumentSnapshot<DocumentData> | 
   const docId = docSnap.id;
   const displayName = data.name || data.displayName || data.fullName || 'Unnamed User';
   const username = data.username || displayName.toLowerCase().replace(/\s+/g, '_');
-  const photoURL = data.profilePic || data.photoURL || data.avatar || data.avatarUrl || '';
+  const photoURL = sanitizeHttpsUrl(data.profilePic || data.photoURL || data.avatar || data.avatarUrl || '');
   const followers = Number(data.followersCount ?? data.followers ?? 0);
   const following = Number(data.followingCount ?? data.following ?? 0);
   const postCount = Number(data.postCount ?? data.uploads ?? data.totalVideos ?? 0);
@@ -208,15 +209,18 @@ export function normalizeMediaDoc(
     mediaKind = 'Photo';
   }
 
-  const videoURL = mediaKind === 'Video' ? (rawVideoUrl || rawGenericMedia || primaryMediaUrl) : '';
-  const thumbnailURL =
+  const videoURL = sanitizeHttpsUrl(
+    mediaKind === 'Video' ? (rawVideoUrl || rawGenericMedia || primaryMediaUrl) : ''
+  );
+  const thumbnailURL = sanitizeHttpsUrl(
     data.thumbnailURL ||
     data.thumbnailUrl ||
     data.thumbnail ||
     data.thumbUrl ||
     data.coverUrl ||
     rawImageUrl ||
-    (mediaKind === 'Photo' ? primaryMediaUrl : '');
+    (mediaKind === 'Photo' ? primaryMediaUrl : '')
+  );
 
   const caption =
     data.caption ||

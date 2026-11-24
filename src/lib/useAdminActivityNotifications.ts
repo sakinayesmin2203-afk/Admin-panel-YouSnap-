@@ -22,27 +22,24 @@ import {
   normalizeUserDoc,
   toMillis,
 } from './firestoreAdapters';
+import { secureStorage } from './security';
 
 const READ_STORAGE_KEY = 'yousnap_admin_read_notif_ids_v1';
 const DISMISSED_STORAGE_KEY = 'yousnap_admin_dismissed_notif_ids_v1';
 
-function loadStringSet(key: string): Set<string> {
+async function loadStringSetEncrypted(key: string): Promise<Set<string>> {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw);
+    const parsed = await secureStorage.getEncryptedItem<string[]>(key);
     return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
   } catch {
     return new Set();
   }
 }
 
-function saveStringSet(key: string, set: Set<string>) {
-  try {
-    localStorage.setItem(key, JSON.stringify(Array.from(set)));
-  } catch {
+function saveStringSetEncrypted(key: string, set: Set<string>) {
+  secureStorage.setEncryptedItem(key, Array.from(set)).catch(() => {
     // ignore storage quota errors
-  }
+  });
 }
 
 export interface AdminNotificationItem {
@@ -67,10 +64,23 @@ export function useAdminActivityNotifications(enabled: boolean) {
   const [supportDocs, setSupportDocs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [readIds, setReadIds] = useState<Set<string>>(() => loadStringSet(READ_STORAGE_KEY));
-  const [dismissedIds, setDismissedIds] = useState<Set<string>>(() =>
-    loadStringSet(DISMISSED_STORAGE_KEY)
-  );
+  const [readIds, setReadIds] = useState<Set<string>>(() => new Set());
+  const [dismissedIds, setDismissedIds] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      loadStringSetEncrypted(READ_STORAGE_KEY),
+      loadStringSetEncrypted(DISMISSED_STORAGE_KEY),
+    ]).then(([loadedRead, loadedDismissed]) => {
+      if (!active) return;
+      setReadIds(loadedRead);
+      setDismissedIds(loadedDismissed);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!enabled || !auth.currentUser) {
@@ -374,7 +384,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
       } else {
         next.delete(notif.id);
       }
-      saveStringSet(READ_STORAGE_KEY, next);
+      saveStringSetEncrypted(READ_STORAGE_KEY, next);
       return next;
     });
   }, []);
@@ -384,7 +394,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
       if (prev.has(id)) return prev;
       const next = new Set(prev);
       next.add(id);
-      saveStringSet(READ_STORAGE_KEY, next);
+      saveStringSetEncrypted(READ_STORAGE_KEY, next);
       return next;
     });
   }, []);
@@ -406,7 +416,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
       notifications.forEach((n) => {
         if (n.source === 'live_activity') next.add(n.id);
       });
-      saveStringSet(READ_STORAGE_KEY, next);
+      saveStringSetEncrypted(READ_STORAGE_KEY, next);
       return next;
     });
   }, [notifications]);
@@ -420,7 +430,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
     setDismissedIds((prev) => {
       const next = new Set(prev);
       next.add(notif.id);
-      saveStringSet(DISMISSED_STORAGE_KEY, next);
+      saveStringSetEncrypted(DISMISSED_STORAGE_KEY, next);
       return next;
     });
   }, []);
@@ -445,7 +455,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
       setDismissedIds((prev) => {
         const next = new Set(prev);
         readLiveIds.forEach((id) => next.add(id));
-        saveStringSet(DISMISSED_STORAGE_KEY, next);
+        saveStringSetEncrypted(DISMISSED_STORAGE_KEY, next);
         return next;
       });
     }

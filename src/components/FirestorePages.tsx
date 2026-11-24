@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import UserDetailsModal from './UserDetailsModal';
 import VideoPreviewModal from './VideoPreviewModal';
 import { db, auth, googleProvider, signInWithPopup, signOut, onAuthStateChanged, handleFirestoreError, OperationType } from '../../lib/firebase';
+import { secureStorage, createEncryptedAuditEnvelope } from '../lib/security';
 import { 
   collection, 
   onSnapshot, 
@@ -27,7 +28,6 @@ import {
   RefreshCw, 
   Sparkles, 
   ShieldCheck, 
-  Eye, 
   ThumbsUp, 
   ExternalLink,
   ArrowUpRight,
@@ -425,6 +425,52 @@ export const VideosPage = () => {
   const [newViews, setNewViews] = useState('0');
   const [newLikes, setNewLikes] = useState('0');
 
+  // Viral Boost modal state
+  const [viralModalItem, setViralModalItem] = useState<any | null>(null);
+  const [viralDays, setViralDays] = useState<string>('');
+  const [viralHours, setViralHours] = useState<string>('');
+  const [viralSubmitting, setViralSubmitting] = useState(false);
+
+  const handleOpenViralModal = (video: any) => {
+    setViralModalItem(video);
+    if (video.isViral) {
+      setViralDays(video.viralDurationDays ? String(video.viralDurationDays) : '');
+      setViralHours(video.viralDurationHours ? String(video.viralDurationHours) : '');
+    } else {
+      setViralDays('');
+      setViralHours('');
+    }
+  };
+
+  const handleConfirmBoost = async (isStop: boolean = false) => {
+    if (!viralModalItem) return;
+    const col = viralModalItem.sourceCollection || 'videos';
+    const docId = viralModalItem.docId || viralModalItem.id;
+    setViralSubmitting(true);
+    try {
+      const isViral = !isStop;
+      const days = isViral ? Math.max(0, parseInt(viralDays || '0', 10) || 0) : 0;
+      const hours = isViral ? Math.max(0, parseInt(viralHours || '0', 10) || 0) : 0;
+      const expiresAt = isViral ? new Date(Date.now() + days * 86400000 + hours * 3600000).toISOString() : null;
+
+      await updateDoc(doc(db, col, docId), {
+        isViral,
+        viralDurationDays: days,
+        viralDurationHours: hours,
+        viralExpiresAt: expiresAt,
+        updatedAt: serverTimestamp()
+      });
+
+      showToast(isViral ? `Media successfully boosted as Viral for ${days}d ${hours}h! 🔥` : 'Viral boost removed.');
+      setViralModalItem(null);
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.UPDATE, `${col}/${docId}`);
+      showToast('Failed to update viral status — check Firestore Rules.');
+    } finally {
+      setViralSubmitting(false);
+    }
+  };
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
@@ -643,9 +689,8 @@ export const VideosPage = () => {
                 <tr>
                   <th className="py-3 px-4 font-black">Type</th>
                   <th className="py-3 px-4 font-black">Creator</th>
-                  <th className="py-3 px-4 font-black">Preview & Caption</th>
-                  <th className="py-3 px-4 font-black">Views</th>
-                  <th className="py-3 px-4 font-black">Likes</th>
+                  <th className="py-3 px-4 font-black">Preview &amp; Caption</th>
+                  <th className="py-3 px-4 font-black">Viral Status</th>
                   <th className="py-3 px-4 font-black text-right">Moderation Actions</th>
                 </tr>
               </thead>
@@ -673,7 +718,8 @@ export const VideosPage = () => {
                       <div className="flex items-center gap-3">
                         <div 
                           onClick={() => setPreviewVideo(video)}
-                          className="relative w-14 h-10 rounded-lg overflow-hidden bg-slate-900 shrink-0 cursor-pointer group flex items-center justify-center"
+                          className="relative w-14 h-10 rounded-lg overflow-hidden bg-slate-900 shrink-0 cursor-pointer group flex items-center justify-center shadow-xs"
+                          title="Click to preview full-screen"
                         >
                           {video.thumbnailURL || video.mediaUrl ? (
                             <img 
@@ -688,31 +734,44 @@ export const VideosPage = () => {
                             {video.mediaKind === 'Photo' ? <ImageIcon size={12} /> : <Play size={12} className="fill-white" />}
                           </div>
                         </div>
-                        <p className="font-semibold text-slate-800 line-clamp-1 max-w-xs">
+                        <p 
+                          onClick={() => setPreviewVideo(video)}
+                          className="font-semibold text-slate-800 line-clamp-1 max-w-xs cursor-pointer hover:text-emerald-600 transition"
+                          title="Click to preview full-screen"
+                        >
                           {video.caption || 'No caption'}
                         </p>
                       </div>
                     </td>
-                    <td className="py-3.5 px-4 font-bold text-slate-700">
-                      <div className="flex items-center gap-1">
-                        <Eye size={12} className="text-slate-400" />
-                        <span>{parseInt(video.views || 0).toLocaleString()}</span>
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-4 font-bold text-slate-700">
-                      <div className="flex items-center gap-1">
-                        <ThumbsUp size={12} className="text-slate-400" />
-                        <span>{parseInt(video.likes || 0).toLocaleString()}</span>
-                      </div>
+                    <td className="py-3.5 px-4">
+                      {video.isViral ? (
+                        <div className="space-y-1">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500 text-white font-extrabold text-[10px] uppercase shadow-xs animate-pulse">
+                            <Sparkles size={11} /> Viral 🔥
+                          </span>
+                          <p className="text-[10px] text-slate-500 font-mono">
+                            {video.viralDurationDays || 0}d {video.viralDurationHours || 0}h boost
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenViralModal(video)}
+                            className="text-[10px] font-bold text-rose-600 hover:underline block"
+                          >
+                            Manage Boost
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenViralModal(video)}
+                          className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-extrabold text-[11px] transition shadow-xs flex items-center gap-1.5"
+                        >
+                          <Sparkles size={12} /> Boost / Make Viral
+                        </button>
+                      )}
                     </td>
                     <td className="py-3.5 px-4 text-right">
                       <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => setPreviewVideo(video)}
-                          className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold transition flex items-center gap-1"
-                        >
-                          <Play size={10} /> Preview
-                        </button>
                         <button
                           onClick={() => handleDeleteVideo(video)}
                           className="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg text-[11px] font-bold transition flex items-center gap-1"
@@ -729,6 +788,133 @@ export const VideosPage = () => {
           </div>
         )}
       </div>
+
+      {/* Viral Boost Configuration Modal */}
+      {viralModalItem && (
+        <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in duration-150 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center">
+                  <Sparkles size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900">Viral Boost Configuration</h3>
+                  <p className="text-[11px] text-slate-500 line-clamp-1">{viralModalItem.caption || 'Media Item'}</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setViralModalItem(null)}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Quick Presets */}
+            <div className="space-y-1.5">
+              <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">Quick Presets</p>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setViralDays(''); setViralHours('24'); }}
+                  className={`p-2 rounded-xl text-xs font-bold border transition ${
+                    (viralDays === '' || viralDays === '0') && viralHours === '24' ? 'bg-amber-500 text-white border-amber-600 shadow-xs' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  24 Hours
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setViralDays('3'); setViralHours(''); }}
+                  className={`p-2 rounded-xl text-xs font-bold border transition ${
+                    viralDays === '3' && (viralHours === '' || viralHours === '0') ? 'bg-amber-500 text-white border-amber-600 shadow-xs' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  3 Days
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setViralDays('7'); setViralHours(''); }}
+                  className={`p-2 rounded-xl text-xs font-bold border transition ${
+                    viralDays === '7' && (viralHours === '' || viralHours === '0') ? 'bg-amber-500 text-white border-amber-600 shadow-xs' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  7 Days
+                </button>
+              </div>
+            </div>
+
+            {/* Custom Inputs */}
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Days</label>
+                <input 
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Enter days"
+                  value={viralDays}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                    setViralDays(cleaned);
+                  }}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 placeholder-slate-400 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Hours</label>
+                <input 
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Enter hours"
+                  value={viralHours}
+                  onChange={(e) => {
+                    const cleaned = e.target.value.replace(/[^0-9]/g, '');
+                    setViralHours(cleaned);
+                  }}
+                  className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-slate-900 placeholder-slate-400 focus:outline-none focus:border-amber-500"
+                />
+              </div>
+            </div>
+
+            {viralModalItem.isViral && (
+              <div className="pt-1">
+                <button
+                  type="button"
+                  disabled={viralSubmitting}
+                  onClick={() => handleConfirmBoost(true)}
+                  className="w-full py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 font-extrabold rounded-xl text-xs transition"
+                >
+                  Stop Viral / Remove Boost
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setViralModalItem(null)}
+                className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  viralSubmitting ||
+                  ((parseInt(viralDays || '0', 10) || 0) <= 0 &&
+                    (parseInt(viralHours || '0', 10) || 0) <= 0)
+                }
+                onClick={() => handleConfirmBoost(false)}
+                className="px-5 py-2.5 rounded-xl text-xs font-black bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white shadow-sm flex items-center gap-1.5"
+              >
+                {viralSubmitting ? <RefreshCw size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                Start Viral 🔥
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Video / Photo Preview Modal */}
       <VideoPreviewModal 
@@ -898,16 +1084,21 @@ export const MonetizationPage = () => {
   const [statusFilter, setStatusFilter] = useState('All');
   const [selectedUserForModal, setSelectedUserForModal] = useState<any | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [usdToInrRate, setUsdToInrRate] = useState<number>(() => {
-    const saved = parseFloat(localStorage.getItem('yousnap_usd_to_inr_rate') || '85');
-    return Number.isFinite(saved) && saved > 0 ? saved : 85;
-  });
+  const [usdToInrRate, setUsdToInrRate] = useState<number>(85);
 
   // Mark as Paid Modal State
   const [payoutTarget, setPayoutTarget] = useState<any | null>(null);
   const [payoutAmountUsdInput, setPayoutAmountUsdInput] = useState<string>('0');
   const [payoutRefInput, setPayoutRefInput] = useState<string>('');
   const [payoutSubmitting, setPayoutSubmitting] = useState(false);
+
+  useEffect(() => {
+    secureStorage.getEncryptedItem<number>('yousnap_usd_to_inr_rate').then((saved) => {
+      if (typeof saved === 'number' && Number.isFinite(saved) && saved > 0) {
+        setUsdToInrRate(saved);
+      }
+    });
+  }, []);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -918,7 +1109,7 @@ export const MonetizationPage = () => {
     const parsed = parseFloat(raw);
     if (!Number.isNaN(parsed) && parsed > 0) {
       setUsdToInrRate(parsed);
-      localStorage.setItem('yousnap_usd_to_inr_rate', String(parsed));
+      secureStorage.setEncryptedItem('yousnap_usd_to_inr_rate', parsed).catch(() => {});
     }
   };
 
@@ -1335,6 +1526,36 @@ export const MonetizationPage = () => {
         // ignore if notifications rules reject write
       }
 
+      // Record AES-256-GCM encrypted payout audit log for Admin review
+      try {
+        const encryptedAuditEnvelope = await createEncryptedAuditEnvelope(
+          {
+            recipientUid,
+            payoutUsd,
+            payoutInr,
+            referenceId: refText || null,
+            adminEmail: auth.currentUser?.email || 'admin',
+            timestampIso: new Date().toISOString(),
+          },
+          'payout_audit'
+        );
+        if (encryptedAuditEnvelope) {
+          await addDoc(collection(db, 'admin_notifications'), {
+            type: 'Monetization',
+            targetUser: u?.displayName || u?.username || recipientUid || 'Creator',
+            targetAvatar: u?.photoURL || '',
+            message: `Creator payout processed (${formatUsdAmount(payoutUsd)} / ₹${payoutInr.toFixed(2)})`,
+            encryptedAuditEnvelope,
+            encryptionAlg: 'AES-256-GCM',
+            unread: false,
+            linkTo: 'Monetization',
+            createdAt: serverTimestamp(),
+          });
+        }
+      } catch {
+        // ignore if admin_notifications write is restricted
+      }
+
       // Local Simulator notification sync
       const notifsKey = 'yousnap_user_app_notifications';
       const existing = JSON.parse(localStorage.getItem(notifsKey) || '[]');
@@ -1373,20 +1594,23 @@ export const MonetizationPage = () => {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-xs">
         <div>
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2">
-            <DollarSign className="text-emerald-600" /> Monetization & Live AdMob Revenue Share (60% / 40%)
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center gap-2.5">
+            <span className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-600 flex items-center justify-center shrink-0">
+              <DollarSign size={20} />
+            </span>
+            Monetization &amp; AdMob Revenue Share (60% / 40%)
           </h1>
-          <p className="text-xs text-slate-500 mt-1">
-            Live <code className="text-emerald-600 font-bold">/ad_events</code> AdMob income & monetized views — 60% Platform share & 40% Creator share (Approved users only)
+          <p className="text-xs text-slate-500 mt-1.5">
+            AdMob revenue &amp; creator payout management — 60% Platform share &amp; 40% Creator share (Approved creators only)
           </p>
         </div>
 
         {/* USD to INR Exchange Rate Control */}
-        <div className="flex items-center gap-2 bg-white px-3.5 py-2 rounded-2xl border border-slate-200 shadow-2xs">
+        <div className="flex items-center gap-2.5 bg-slate-50 px-4 py-2.5 rounded-2xl border border-slate-200 shrink-0">
           <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">1 USD =</span>
-          <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-xl px-2 py-1">
+          <div className="flex items-center gap-1 bg-white border border-slate-200 rounded-xl px-2.5 py-1 shadow-2xs">
             <span className="text-xs font-black text-emerald-600">₹</span>
             <input
               type="number"
@@ -1401,17 +1625,19 @@ export const MonetizationPage = () => {
         </div>
       </div>
 
-      {/* Live 60% / 40% Revenue Sharing Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-slate-900 text-white p-4 rounded-2xl border border-slate-800 shadow-sm">
-          <div className="flex items-center justify-between">
+      {/* Balanced 3-Card Revenue Sharing Summary Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-stretch">
+        <div className="bg-slate-900 text-white p-5 rounded-2xl border border-slate-800 shadow-sm flex flex-col justify-between min-h-[132px]">
+          <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Platform Revenue (My 60%)</p>
-            <TrendingUp size={16} className="text-emerald-400" />
+            <div className="w-8 h-8 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center shrink-0">
+              <TrendingUp size={16} className="text-emerald-400" />
+            </div>
           </div>
-          <p className="text-2xl font-black mt-1.5 font-mono">
+          <p className="text-3xl font-black mt-2 font-mono tracking-tight">
             {formatUsdAmount(revenueSummary.adminPlatform60Usd)}
           </p>
-          <div className="flex items-center justify-between mt-1 text-[11px] text-slate-300">
+          <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-800 text-[11px] text-slate-300">
             <span className="font-bold text-emerald-300">
               {formatInrAmount(revenueSummary.adminPlatform60Usd, usdToInrRate)}
             </span>
@@ -1421,15 +1647,17 @@ export const MonetizationPage = () => {
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-emerald-200 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-wider">Creators Share (40% Pool)</p>
-            <Wallet size={16} className="text-emerald-600" />
+        <div className="bg-white p-5 rounded-2xl border border-emerald-200 shadow-sm flex flex-col justify-between min-h-[132px]">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider">Creators Share (40% Pool)</p>
+            <div className="w-8 h-8 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0">
+              <Wallet size={16} className="text-emerald-600" />
+            </div>
           </div>
-          <p className="text-2xl font-black text-slate-900 mt-1.5 font-mono">
+          <p className="text-3xl font-black text-slate-900 mt-2 font-mono tracking-tight">
             {formatUsdAmount(revenueSummary.totalCreators40Usd)}
           </p>
-          <div className="flex items-center justify-between mt-1 text-[11px]">
+          <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-slate-100 text-[11px]">
             <span className="font-bold text-emerald-700">
               {formatInrAmount(revenueSummary.totalCreators40Usd, usdToInrRate)}
             </span>
@@ -1439,29 +1667,20 @@ export const MonetizationPage = () => {
           </div>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] font-bold text-indigo-600 uppercase tracking-wider">Live Monetized Views</p>
-            <Eye size={16} className="text-indigo-500" />
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col justify-between min-h-[132px]">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Creator Applications</p>
+            <div className="w-8 h-8 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">
+              <Users size={16} className="text-slate-600" />
+            </div>
           </div>
-          <p className="text-2xl font-black text-slate-900 mt-1.5">
-            {revenueSummary.totalApprovedMonetizedViews.toLocaleString()}
-          </p>
-          <div className="flex items-center justify-between mt-1 text-[11px] text-slate-500">
-            <span>Approved creators only</span>
-            <span className="font-semibold text-slate-600">{revenueSummary.totalAdRevenueEvents} Ad Events</span>
-          </div>
-        </div>
-
-        <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
-          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Creator Applications</p>
-          <div className="flex items-baseline gap-3 mt-1.5">
-            <p className="text-2xl font-black text-emerald-600">
+          <div className="flex items-baseline gap-2.5 mt-2">
+            <p className="text-3xl font-black text-emerald-600 tracking-tight">
               {combinedRequests.filter(r => r.status === 'Approved').length}
             </p>
-            <span className="text-xs font-bold text-slate-500">Approved</span>
+            <span className="text-xs font-bold text-slate-500">Approved Creators</span>
           </div>
-          <div className="flex items-center gap-3 mt-1 text-[11px] font-bold">
+          <div className="flex flex-wrap items-center gap-2.5 mt-3 pt-2.5 border-t border-slate-100 text-[11px] font-bold">
             <span className="text-amber-600">
               {combinedRequests.filter(r => r.status === 'Pending').length} Pending
             </span>
@@ -1479,30 +1698,30 @@ export const MonetizationPage = () => {
 
       {/* Warning if /ad_events Firestore rules are not yet added or unallocated feed pool exists */}
       {adEventsError && (
-        <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3 text-xs text-amber-800">
+        <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-start gap-3 text-xs text-amber-800 shadow-2xs">
           <AlertTriangle size={18} className="shrink-0 text-amber-600 mt-0.5" />
           <div>
-            <p className="font-bold">Live /ad_events Listener Notice</p>
+            <p className="font-bold">Ad Events Listener Notice</p>
             <p className="text-[11px] text-amber-700 mt-0.5">
-              Could not read <code className="font-mono font-bold">/ad_events</code> ({adEventsError}). Make sure the <code className="font-mono font-bold">/ad_events</code> Firestore Rule is published in Firebase Console so live AdMob income &amp; monetized views load here.
+              Could not read <code className="font-mono font-bold">/ad_events</code> ({adEventsError}). Make sure the <code className="font-mono font-bold">/ad_events</code> Firestore Rule is published in Firebase Console so AdMob income loads here.
             </p>
           </div>
         </div>
       )}
 
       {revenueSummary.unallocatedFeedPoolUsd > 0 && (
-        <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-2xl flex items-center gap-3 text-xs text-blue-800">
+        <div className="p-4 bg-blue-50 border border-blue-200 rounded-2xl flex items-center gap-3 text-xs text-blue-800 shadow-2xs">
           <Sparkles size={16} className="shrink-0 text-blue-600" />
           <p className="text-[11px]">
-            <span className="font-bold">{formatUsdAmount(revenueSummary.unallocatedFeedPoolUsd)}</span> ({formatInrAmount(revenueSummary.unallocatedFeedPoolUsd, usdToInrRate)}) in feed AdMob revenue is waiting in the pool and will automatically split 40% across Approved creators as soon as live monetized views arrive.
+            <span className="font-bold">{formatUsdAmount(revenueSummary.unallocatedFeedPoolUsd)}</span> ({formatInrAmount(revenueSummary.unallocatedFeedPoolUsd, usdToInrRate)}) in feed AdMob revenue is waiting in the pool and will automatically split 40% across Approved creators as soon as qualifying view events are recorded.
           </p>
         </div>
       )}
 
       {/* Filter Tabs */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-xs flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs font-bold text-slate-500">Filter By Status:</p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {['All', 'Pending', 'Approved', 'Rejected'].map(st => (
             <button
               key={st}
@@ -1531,11 +1750,11 @@ export const MonetizationPage = () => {
       )}
 
       {/* Requests Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-2xs">
+      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
         {loading ? (
           <div className="p-12 text-center">
             <RefreshCw className="animate-spin mx-auto text-emerald-500 mb-2" size={24} />
-            <p className="text-xs font-bold text-slate-600">Connecting to Firestore & loading live AdMob data...</p>
+            <p className="text-xs font-bold text-slate-600">Connecting to Firestore &amp; loading AdMob revenue data...</p>
           </div>
         ) : filteredRequests.length === 0 ? (
           <div className="p-16 text-center">
@@ -1550,12 +1769,11 @@ export const MonetizationPage = () => {
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px]">
                 <tr>
-                  <th className="py-3 px-4 font-black">Creator Profile</th>
-                  <th className="py-3 px-4 font-black">Live Monetized Views</th>
-                  <th className="py-3 px-4 font-black">Calculated Earnings (40%)</th>
-                  <th className="py-3 px-4 font-black">UPI / Bank &amp; Balance</th>
-                  <th className="py-3 px-4 font-black">Status</th>
-                  <th className="py-3 px-4 font-black text-right">Actions &amp; Payout</th>
+                  <th className="py-3.5 px-5 font-black">Creator Profile</th>
+                  <th className="py-3.5 px-5 font-black">Calculated Earnings (40%)</th>
+                  <th className="py-3.5 px-5 font-black">UPI / Bank &amp; Balance</th>
+                  <th className="py-3.5 px-5 font-black">Status</th>
+                  <th className="py-3.5 px-5 font-black text-right">Actions &amp; Payout</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -1572,8 +1790,6 @@ export const MonetizationPage = () => {
                   const isApprovedCreator = req.status === 'Approved' || Boolean(metrics?.isApproved);
                   const payoutInfo = extractCreatorPayoutDetails(u);
 
-                  const liveMonetizedViews = isApprovedCreator ? (metrics?.monetizedViews || 0) : 0;
-                  const profileTotalViews = parseInt(req.totalViews ?? u.videoViewsCount ?? 0) || 0;
                   const share40Usd = isApprovedCreator ? (metrics?.creatorShare40Usd || 0) : 0;
                   const gross100Usd = isApprovedCreator ? (metrics?.gross100Usd || 0) : 0;
                   const paidUsd = isApprovedCreator ? (metrics?.paidAmountUsd || 0) : 0;
@@ -1581,7 +1797,7 @@ export const MonetizationPage = () => {
 
                   return (
                     <tr key={req.id} className="hover:bg-slate-50/70 transition align-top">
-                      <td className="py-3.5 px-4">
+                      <td className="py-4 px-5">
                         <div 
                           onClick={() => setSelectedUserForModal(u)}
                           className="flex items-center gap-3 cursor-pointer group"
@@ -1609,39 +1825,8 @@ export const MonetizationPage = () => {
                         </div>
                       </td>
 
-                      {/* Live Monetized Views */}
-                      <td className="py-3.5 px-4">
-                        {isApprovedCreator ? (
-                          <div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="font-black text-slate-900 text-xs">
-                                {liveMonetizedViews.toLocaleString()}
-                              </span>
-                              <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[9px] font-black uppercase">
-                                Live
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-slate-400 mt-0.5">
-                              Profile views: {profileTotalViews.toLocaleString()}
-                            </p>
-                            {revenueSummary.totalApprovedMonetizedViews > 0 && (
-                              <p className="text-[10px] font-semibold text-indigo-600 mt-0.5">
-                                {((metrics?.viewShareRatio || 0) * 100).toFixed(1)}% feed share
-                              </p>
-                            )}
-                          </div>
-                        ) : (
-                          <div>
-                            <p className="font-bold text-slate-400">0 live views</p>
-                            <p className="text-[10px] text-slate-400 mt-0.5">
-                              Profile views: {profileTotalViews.toLocaleString()}
-                            </p>
-                          </div>
-                        )}
-                      </td>
-
                       {/* Calculated Earnings (Direct 40% Creator Share in USD + INR) */}
-                      <td className="py-3.5 px-4">
+                      <td className="py-4 px-5">
                         {isApprovedCreator ? (
                           <div>
                             <div className="flex items-baseline gap-1.5">
@@ -1670,7 +1855,7 @@ export const MonetizationPage = () => {
                       </td>
 
                       {/* UPI / Bank Details & Remaining Balance */}
-                      <td className="py-3.5 px-4 max-w-[230px]">
+                      <td className="py-4 px-5 max-w-[240px]">
                         <div className="space-y-1">
                           {payoutInfo.hasDetails ? (
                             <div className="bg-slate-50 border border-slate-200 rounded-xl p-2 space-y-0.5">
@@ -1730,7 +1915,7 @@ export const MonetizationPage = () => {
                       </td>
 
                       {/* Request Status */}
-                      <td className="py-3.5 px-4">
+                      <td className="py-4 px-5">
                         <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full font-bold text-[10px] ${
                           req.status === 'Approved' 
                             ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
@@ -1746,7 +1931,7 @@ export const MonetizationPage = () => {
                       </td>
 
                       {/* Approval & Mark as Paid Actions */}
-                      <td className="py-3.5 px-4 text-right">
+                      <td className="py-4 px-5 text-right">
                         <div className="flex flex-col items-end gap-1.5">
                           {isApprovedCreator && (
                             <button

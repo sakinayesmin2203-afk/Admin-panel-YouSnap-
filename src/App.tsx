@@ -16,15 +16,14 @@ import FirestoreNotifications from './components/FirestoreNotifications';
 import { initFirestoreSeedIfNeeded } from './lib/firestoreSeeder';
 import { useAdminActivityNotifications } from './lib/useAdminActivityNotifications';
 import { auth, signOut, onAuthStateChanged } from '../lib/firebase';
+import { enforceHttpsTransport, initSecurityKeystore, secureStorage } from './lib/security';
 import { AlertTriangle, CheckCircle2, Trash2, Send } from 'lucide-react';
 import AdminLogin from './components/AdminLogin';
 
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [authChecking, setAuthChecking] = useState<boolean>(true);
-  const [, setAdminEmail] = useState<string>(() => {
-    return localStorage.getItem('yousnap_admin_email') || '';
-  });
+  const [, setAdminEmail] = useState<string>('');
 
   const [activeView, setActiveView] = useState('Dashboard');
   const [externalPreviewVideo, setExternalPreviewVideo] = useState<ModerationItem | null>(null);
@@ -44,21 +43,25 @@ export default function App() {
     clearReadNotifications,
   } = useAdminActivityNotifications(isAuthenticated);
 
-  // Track real Firebase Auth session so Firestore rules (`request.auth != null`) succeed
+  // Track real Firebase Auth session over TLS and initialize AES-256-GCM keystore
   useEffect(() => {
+    enforceHttpsTransport();
+    initSecurityKeystore();
     initFirestoreSeedIfNeeded();
+
+    // Remove any legacy plaintext admin flags from localStorage
+    secureStorage.removeItem('yousnap_admin_auth');
+    secureStorage.removeItem('yousnap_admin_email');
 
     const unsubAuth = onAuthStateChanged(auth, (user) => {
       if (user) {
         const identifier = user.email || user.uid;
         setIsAuthenticated(true);
         setAdminEmail(identifier);
-        localStorage.setItem('yousnap_admin_auth', 'true');
-        localStorage.setItem('yousnap_admin_email', identifier);
+        initSecurityKeystore();
       } else {
         setIsAuthenticated(false);
-        localStorage.removeItem('yousnap_admin_auth');
-        localStorage.removeItem('yousnap_admin_email');
+        setAdminEmail('');
       }
       setAuthChecking(false);
     });
@@ -69,15 +72,14 @@ export default function App() {
   const handleAdminLogin = (email: string) => {
     setIsAuthenticated(true);
     setAdminEmail(email);
-    localStorage.setItem('yousnap_admin_auth', 'true');
-    localStorage.setItem('yousnap_admin_email', email);
+    initSecurityKeystore();
   };
 
   const handleAdminLogout = () => {
     signOut(auth).catch(() => {});
     setIsAuthenticated(false);
-    localStorage.removeItem('yousnap_admin_auth');
-    localStorage.removeItem('yousnap_admin_email');
+    setAdminEmail('');
+    secureStorage.clearSecurityKeystore().catch(() => {});
   };
 
   if (authChecking) {
@@ -240,7 +242,7 @@ export default function App() {
 
                 <h3 className="text-lg font-extrabold text-center text-slate-900">Confirm Media Deletion</h3>
                 <p className="text-xs text-slate-600 text-center mt-2 leading-relaxed px-2 font-medium">
-                  নিয়ম ভংগ কৰাৰ বাবে আপুনি সঁচাকৈয়ে এই ভিডিওটো YouSnap-ৰ পৰা মচি পেলাব বিচাৰে নেকি?
+                  Are you sure you want to permanently delete this video from YouSnap for violating platform rules?
                 </p>
 
                 {/* Target Media Snapshot */}

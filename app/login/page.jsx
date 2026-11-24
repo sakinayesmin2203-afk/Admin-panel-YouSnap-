@@ -18,11 +18,11 @@ export default function AdminLoginPage() {
     setLoading(true);
 
     try {
-      // ১. Firebase Authentication দ্বাৰা লগইন কৰা
+      // 1. Sign in with Firebase Authentication
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
       const user = userCredential.user;
 
-      // ২. Firestore-ৰ 'users' कलेকশ্বনৰ পৰা ৰোল (role) পৰীক্ষা কৰা
+      // 2. Check user role from Firestore 'users' collection
       const userDocRef = doc(db, 'users', user.uid);
       const userDocSnap = await getDoc(userDocRef);
 
@@ -31,15 +31,15 @@ export default function AdminLoginPage() {
         const role = userData.role;
 
         if (role === 'admin') {
-          // যদি এডমিন হয়, তেন্তে ড্যাশবৰ্ডলৈ পঠিওৱা
+          // Redirect to dashboard if user is admin
           router.push('/dashboard');
         } else {
-          // যদি এডমিন নহয়, তেন্তে লগআউট কৰি এৰৰ দেখুওৱা
+          // Sign out and show error if user is not admin
           await signOut(auth);
           setError('Access Denied: You do not have admin permissions.');
         }
       } else {
-        // যদি ইউজাৰৰ ডকুমেণ্ট পোৱা নাযায়
+        // User document not found
         await signOut(auth);
         setError('Access Denied: Admin user profile not found in database.');
       }

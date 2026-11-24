@@ -645,7 +645,7 @@ export default function VideosContent() {
 
             <h3 className="text-lg font-extrabold text-center text-slate-900">Confirm Media Deletion</h3>
             <p className="text-xs text-slate-600 text-center mt-2 leading-relaxed px-2 font-medium">
-              নিয়ম ভংগ কৰাৰ বাবে আপুনি সঁচাকৈয়ে এই ভিডিওটো YouSnap-ৰ পৰা মচি পেলাব বিচাৰে নাকি?
+              Are you sure you want to permanently delete this video from YouSnap for violating platform rules?
             </p>
 
             {/* Media Item Snapshot */}
