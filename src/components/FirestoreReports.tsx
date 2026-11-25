@@ -33,6 +33,7 @@ import {
   buildUsersLookupMap,
   deleteMediaFromFirestore,
   isAppReportDoc,
+  isRecordDeleted,
   normalizeAppReport,
   normalizeMediaDoc,
   normalizeUserDoc,
@@ -44,6 +45,7 @@ export default function FirestoreReports() {
   const [supportReportDocs, setSupportReportDocs] = useState<any[]>([]);
   const [usersMap, setUsersMap] = useState<Record<string, any>>({});
   const [mediaMap, setMediaMap] = useState<Record<string, any>>({});
+  const [mediaLoaded, setMediaLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'All' | 'Pending' | 'Resolved'>('All');
@@ -72,7 +74,9 @@ export default function FirestoreReports() {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        const normalized = snapshot.docs.map((d) => normalizeUserDoc(d));
+        const normalized = snapshot.docs
+          .map((d) => normalizeUserDoc(d))
+          .filter((u) => !u.isDeleted);
         setUsersMap(buildUsersLookupMap(normalized));
       },
       () => {}
@@ -94,6 +98,7 @@ export default function FirestoreReports() {
             });
           });
           setMediaMap(mergedMap);
+          setMediaLoaded(true);
         },
         () => {}
       )
@@ -104,7 +109,7 @@ export default function FirestoreReports() {
       query(collection(db, 'reports')),
       (snapshot) => {
         const docs = snapshot.docs
-          .filter((d) => isAppReportDoc(d.data(), 'reports'))
+          .filter((d) => !isRecordDeleted(d.data()) && isAppReportDoc(d.data(), 'reports'))
           .map((d) => normalizeAppReport(d, 'reports'));
         setReportsColDocs(docs);
         setLoading(false);
@@ -120,7 +125,7 @@ export default function FirestoreReports() {
       query(collection(db, 'support_tickets')),
       (snapshot) => {
         const docs = snapshot.docs
-          .filter((d) => isAppReportDoc(d.data(), 'support_tickets'))
+          .filter((d) => !isRecordDeleted(d.data()) && isAppReportDoc(d.data(), 'support_tickets'))
           .map((d) => normalizeAppReport(d, 'support_tickets'));
         setSupportReportDocs(docs);
         setLoading(false);
@@ -454,7 +459,7 @@ export default function FirestoreReports() {
                               <span>
                                 Reported {targetMedia?.sourceLabel || 'Media'}
                               </span>
-                              {targetMedia?.isDeleted && (
+                              {(targetMedia?.isDeleted || (mediaLoaded && rep.reportedMediaId && !targetMedia)) && (
                                 <span className="px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded text-[9px]">
                                   Deleted
                                 </span>

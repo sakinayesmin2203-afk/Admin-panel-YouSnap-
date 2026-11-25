@@ -24,7 +24,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import UserDetailsModal from './UserDetailsModal';
-import { buildUsersLookupMap, isAppReportDoc, normalizeUserDoc, toMillis } from '../lib/firestoreAdapters';
+import { buildUsersLookupMap, isAppReportDoc, isRecordDeleted, normalizeUserDoc, toMillis } from '../lib/firestoreAdapters';
 
 function isAppealCategory(cat: string): boolean {
   const c = (cat || '').toLowerCase();
@@ -60,7 +60,9 @@ export default function FirestoreSupport() {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        const normalized = snapshot.docs.map((d) => normalizeUserDoc(d));
+        const normalized = snapshot.docs
+          .map((d) => normalizeUserDoc(d))
+          .filter((u) => !u.isDeleted);
         setUsersMap(buildUsersLookupMap(normalized));
       },
       () => {}
@@ -73,7 +75,7 @@ export default function FirestoreSupport() {
       q,
       (snapshot) => {
         const data = snapshot.docs
-          .filter((docSnap) => !isAppReportDoc(docSnap.data(), 'support_tickets'))
+          .filter((docSnap) => !isRecordDeleted(docSnap.data()) && !isAppReportDoc(docSnap.data(), 'support_tickets'))
           .map((docSnap) => {
             const raw = docSnap.data();
             return {

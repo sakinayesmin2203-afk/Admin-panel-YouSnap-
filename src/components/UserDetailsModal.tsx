@@ -39,6 +39,7 @@ import {
   deleteMediaFromFirestore,
   doesMediaBelongToUser,
   isMediaRestricted,
+  isUserDeleted,
   normalizeMediaDoc,
   normalizeUserDoc,
   restrictMediaInFirestore,
@@ -82,7 +83,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
     const unsub = onSnapshot(
       doc(db, 'users', userDocId),
       (docSnap) => {
-        if (docSnap.exists()) {
+        if (docSnap.exists() && !isUserDeleted(docSnap.data())) {
           setCurrentUserData(normalizeUserDoc(docSnap));
         } else {
           showToast('User account deleted from Firestore.');
@@ -126,6 +127,13 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
     });
     return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   }, [mediaByCollection]);
+
+  // Auto-close open media preview if deleted from the App in real time
+  useEffect(() => {
+    if (!mediaLoading && selectedMedia && !userMedia.some((m) => m.mediaKey === selectedMedia.mediaKey)) {
+      setSelectedMedia(null);
+    }
+  }, [userMedia, selectedMedia, mediaLoading]);
 
   if (!isOpen || !currentUserData) return null;
 
@@ -346,7 +354,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
   const isRestricted = currentUserData.status === 'Suspended' || currentUserData.status === 'Banned';
 
   // Derived user statistics using real YouSnap app fields
-  const totalVideos = userMedia.length > 0
+  const totalVideos = !mediaLoading
     ? userMedia.length
     : Number(currentUserData.postCount ?? currentUserData.photoUploadsCount ?? currentUserData.uploads ?? currentUserData.totalVideos ?? 0);
   const totalEarnings = currentUserData.totalEarnings ?? currentUserData.earnings ?? '₹0';

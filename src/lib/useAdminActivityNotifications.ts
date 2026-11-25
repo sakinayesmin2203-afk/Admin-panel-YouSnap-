@@ -17,6 +17,7 @@ import {
   getUserMonetizationApplicationStatus,
   isAppReportDoc,
   isMediaRestricted,
+  isRecordDeleted,
   normalizeAppReport,
   normalizeMediaDoc,
   normalizeUserDoc,
@@ -94,10 +95,12 @@ export function useAdminActivityNotifications(enabled: boolean) {
     const unsubAdmin = onSnapshot(
       query(collection(db, 'admin_notifications')),
       (snapshot) => {
-        const docs = snapshot.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
+        const docs = snapshot.docs
+          .filter((d) => !isRecordDeleted(d.data()))
+          .map((d) => ({
+            id: d.id,
+            ...d.data(),
+          }));
         setAdminDocs(docs);
         setLoading(false);
       },
@@ -110,7 +113,11 @@ export function useAdminActivityNotifications(enabled: boolean) {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        setUsersList(snapshot.docs.map((d) => normalizeUserDoc(d)));
+        setUsersList(
+          snapshot.docs
+            .map((d) => normalizeUserDoc(d))
+            .filter((u) => !u.isDeleted)
+        );
         setLoading(false);
       },
       () => {
@@ -136,7 +143,11 @@ export function useAdminActivityNotifications(enabled: boolean) {
     const unsubMonetization = onSnapshot(
       query(collection(db, 'monetization_requests')),
       (snapshot) => {
-        setMonetizationReqs(snapshot.docs.map((d) => ({ id: d.id, ...d.data() })));
+        setMonetizationReqs(
+          snapshot.docs
+            .filter((d) => !isRecordDeleted(d.data()))
+            .map((d) => ({ id: d.id, ...d.data() }))
+        );
       },
       () => {}
     );
@@ -146,7 +157,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
       query(collection(db, 'reports')),
       (snapshot) => {
         const docs = snapshot.docs
-          .filter((d) => isAppReportDoc(d.data(), 'reports'))
+          .filter((d) => !isRecordDeleted(d.data()) && isAppReportDoc(d.data(), 'reports'))
           .map((d) => normalizeAppReport(d, 'reports'));
         setReportsColDocs(docs);
       },
@@ -157,15 +168,17 @@ export function useAdminActivityNotifications(enabled: boolean) {
     const unsubSupport = onSnapshot(
       query(collection(db, 'support_tickets')),
       (snapshot) => {
-        const docs = snapshot.docs.map((d) => ({
-          id: d.id,
-          docId: d.id,
-          raw: d.data(),
-          isReport: isAppReportDoc(d.data(), 'support_tickets'),
-          normalizedReport: isAppReportDoc(d.data(), 'support_tickets')
-            ? normalizeAppReport(d, 'support_tickets')
-            : null,
-        }));
+        const docs = snapshot.docs
+          .filter((d) => !isRecordDeleted(d.data()))
+          .map((d) => ({
+            id: d.id,
+            docId: d.id,
+            raw: d.data(),
+            isReport: isAppReportDoc(d.data(), 'support_tickets'),
+            normalizedReport: isAppReportDoc(d.data(), 'support_tickets')
+              ? normalizeAppReport(d, 'support_tickets')
+              : null,
+          }));
         setSupportDocs(docs);
       },
       () => {}
@@ -240,6 +253,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
       const id = `live_monetization:req:${req.id}`;
       if (dismissedIds.has(id)) return;
       const owner = uid ? usersMap[uid] : undefined;
+      if (usersList.length > 0 && uid && !owner) return;
       const creatorName = owner?.displayName || owner?.username || uid || 'Creator';
       const followers = Number(req.followersCount ?? owner?.followersCount ?? 0).toLocaleString();
       const views = Number(req.totalViews ?? owner?.videoViewsCount ?? 0).toLocaleString();

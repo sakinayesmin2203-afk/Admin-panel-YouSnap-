@@ -35,6 +35,8 @@ import {
   deleteMediaFromFirestore,
   getUserMonetizationApplicationStatus,
   isMediaRestricted,
+  isRecordDeleted,
+  isUserDeleted,
   isUserRestricted,
   normalizeMediaDoc,
   normalizeUserDoc,
@@ -45,6 +47,7 @@ export default function FirestoreRestrictedAccounts() {
   const [blockedMediaByCol, setBlockedMediaByCol] = useState<Record<string, any[]>>({});
   const [revokedMonetization, setRevokedMonetization] = useState<any[]>([]);
   const [usersMap, setUsersMap] = useState<Record<string, any>>({});
+  const [usersLoaded, setUsersLoaded] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,9 +68,12 @@ export default function FirestoreRestrictedAccounts() {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        const normalized = snapshot.docs.map((d) => normalizeUserDoc(d));
+        const normalized = snapshot.docs
+          .map((d) => normalizeUserDoc(d))
+          .filter((u) => !u.isDeleted);
         const suspended = normalized.filter((u) => isUserRestricted(u));
         setUsersMap(buildUsersLookupMap(normalized));
+        setUsersLoaded(true);
         setRestrictedUsers(suspended);
         setLoading(false);
       },
@@ -94,6 +100,7 @@ export default function FirestoreRestrictedAccounts() {
       query(collection(db, 'monetization_requests')),
       (snapshot) => {
         const revoked = snapshot.docs
+          .filter((docSnap) => !isRecordDeleted(docSnap.data()))
           .map((docSnap) => ({ ...docSnap.data(), id: docSnap.id }))
           .filter((m: any) => m.status === 'Rejected' || m.status === 'Revoked');
         setRevokedMonetization(revoked);
@@ -109,13 +116,19 @@ export default function FirestoreRestrictedAccounts() {
   }, []);
 
   const allRevokedMonetization = React.useMemo(() => {
-    const merged = [...revokedMonetization];
+    const hasUsers = usersLoaded && Object.keys(usersMap).length > 0;
+    const merged = revokedMonetization.filter((m: any) => {
+      const uid = m.userId || m.uid;
+      if (!hasUsers || !uid) return true;
+      const u = usersMap[uid];
+      return Boolean(u && !isUserDeleted(u));
+    });
     const existingIds = new Set(
       merged.flatMap((m: any) => [m.userId, m.uid].filter(Boolean).map(String))
     );
     const seen = new Set<string>();
     Object.values(usersMap).forEach((u: any) => {
-      if (!u?.docId || seen.has(u.docId)) return;
+      if (!u?.docId || u.isDeleted || seen.has(u.docId)) return;
       seen.add(u.docId);
       if (existingIds.has(u.docId) || (u.uid && existingIds.has(String(u.uid)))) return;
       if (getUserMonetizationApplicationStatus(u) === 'Rejected') {
@@ -130,7 +143,7 @@ export default function FirestoreRestrictedAccounts() {
       }
     });
     return merged;
-  }, [revokedMonetization, usersMap]);
+  }, [revokedMonetization, usersMap, usersLoaded]);
 
   const blockedVideos = React.useMemo(() => {
     const merged: any[] = [];

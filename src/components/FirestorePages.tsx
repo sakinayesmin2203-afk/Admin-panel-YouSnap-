@@ -50,6 +50,8 @@ import {
   deleteMediaFromFirestore,
   getUserMonetizationApplicationStatus,
   isMediaRestricted,
+  isRecordDeleted,
+  isUserDeleted,
   normalizeMediaDoc,
   normalizeUserDoc,
 } from '../lib/firestoreAdapters';
@@ -181,7 +183,9 @@ export const UsersPage = () => {
     const unsubscribe = onSnapshot(
       q, 
       (snapshot) => {
-        const data = snapshot.docs.map(docSnap => normalizeUserDoc(docSnap));
+        const data = snapshot.docs
+          .map(docSnap => normalizeUserDoc(docSnap))
+          .filter(u => !u.isDeleted);
         setUsers(data);
         setLoading(false);
         setError(null);
@@ -196,6 +200,17 @@ export const UsersPage = () => {
     // Critical: Clean up listener to prevent memory leak
     return () => unsubscribe();
   }, []);
+
+  // Auto-close UserDetailsModal if the user was deleted from Firestore/App
+  useEffect(() => {
+    if (!selectedUser) return;
+    const stillExists = users.some(
+      (u) => u.docId === selectedUser.docId || u.id === selectedUser.id
+    );
+    if (!stillExists && !loading) {
+      setSelectedUser(null);
+    }
+  }, [users, selectedUser, loading]);
 
   const filteredUsers = users.filter(u => {
     const q = searchQuery.toLowerCase();
@@ -482,7 +497,9 @@ export const VideosPage = () => {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        const normalizedUsers = snapshot.docs.map((d) => normalizeUserDoc(d));
+        const normalizedUsers = snapshot.docs
+          .map((d) => normalizeUserDoc(d))
+          .filter((u) => !u.isDeleted);
         setUsersMap(buildUsersLookupMap(normalizedUsers));
       },
       () => {}
@@ -526,6 +543,17 @@ export const VideosPage = () => {
     });
     return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   }, [mediaByCollection, usersMap]);
+
+  // Auto-close open Preview or Viral modal if the item is deleted from the App
+  useEffect(() => {
+    if (loading) return;
+    if (previewVideo && !videos.some((v) => v.mediaKey === previewVideo.mediaKey)) {
+      setPreviewVideo(null);
+    }
+    if (viralModalItem && !videos.some((v) => v.mediaKey === viralModalItem.mediaKey)) {
+      setViralModalItem(null);
+    }
+  }, [videos, previewVideo, viralModalItem, loading]);
 
   // Delete Media in Firestore
   const handleDeleteVideo = async (item: any) => {
@@ -1077,6 +1105,7 @@ const extractCreatorPayoutDetails = (u: any) => {
 export const MonetizationPage = () => {
   const [requests, setRequests] = useState<any[]>([]);
   const [usersMap, setUsersMap] = useState<Record<string, any>>({});
+  const [usersLoaded, setUsersLoaded] = useState(false);
   const [adEvents, setAdEvents] = useState<any[]>([]);
   const [adEventsError, setAdEventsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1119,23 +1148,25 @@ export const MonetizationPage = () => {
     const unsubReqs = onSnapshot(
       query(collection(db, 'monetization_requests')),
       (snapshot) => {
-        const data = snapshot.docs.map(docSnap => {
-          const rawData = docSnap.data();
-          const rawStatus = String(rawData.status || 'Pending').trim().toLowerCase();
-          const normalizedStatus =
-            rawStatus === 'approved' || rawStatus === 'active' || rawStatus === 'monetized'
-              ? 'Approved'
-              : rawStatus === 'rejected' || rawStatus === 'revoked' || rawStatus === 'declined'
-              ? 'Rejected'
-              : 'Pending';
-          return {
-            ...rawData,
-            id: docSnap.id,
-            userId: rawData.userId || rawData.uid || rawData.creatorId || rawData.applicantId || '',
-            status: normalizedStatus,
-            fromUserDoc: false
-          };
-        });
+        const data = snapshot.docs
+          .filter((docSnap) => !isRecordDeleted(docSnap.data()))
+          .map(docSnap => {
+            const rawData = docSnap.data();
+            const rawStatus = String(rawData.status || 'Pending').trim().toLowerCase();
+            const normalizedStatus =
+              rawStatus === 'approved' || rawStatus === 'active' || rawStatus === 'monetized'
+                ? 'Approved'
+                : rawStatus === 'rejected' || rawStatus === 'revoked' || rawStatus === 'declined'
+                ? 'Rejected'
+                : 'Pending';
+            return {
+              ...rawData,
+              id: docSnap.id,
+              userId: rawData.userId || rawData.uid || rawData.creatorId || rawData.applicantId || '',
+              status: normalizedStatus,
+              fromUserDoc: false
+            };
+          });
         setRequests(data);
         setLoading(false);
         setError(null);
@@ -1149,8 +1180,11 @@ export const MonetizationPage = () => {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        const normalizedUsers = snapshot.docs.map((d) => normalizeUserDoc(d));
+        const normalizedUsers = snapshot.docs
+          .map((d) => normalizeUserDoc(d))
+          .filter((u) => !u.isDeleted);
         setUsersMap(buildUsersLookupMap(normalizedUsers));
+        setUsersLoaded(true);
         setLoading(false);
       },
       (err) => {
@@ -1163,10 +1197,12 @@ export const MonetizationPage = () => {
     const unsubAdEvents = onSnapshot(
       query(collection(db, 'ad_events')),
       (snapshot) => {
-        const events = snapshot.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
+        const events = snapshot.docs
+          .filter((d) => !isRecordDeleted(d.data()))
+          .map((d) => ({
+            id: d.id,
+            ...d.data(),
+          }));
         setAdEvents(events);
         setAdEventsError(null);
       },
@@ -1185,14 +1221,19 @@ export const MonetizationPage = () => {
 
   // Merge explicit monetization_requests with any users who explicitly applied / are approved / rejected
   const combinedRequests = React.useMemo(() => {
-    const merged: any[] = [...requests];
+    const hasLoadedUsers = usersLoaded && Object.keys(usersMap).length > 0;
+    const merged: any[] = requests.filter((r: any) => {
+      if (!hasLoadedUsers || !r.userId) return true;
+      const matched = usersMap[r.userId];
+      return Boolean(matched && !isUserDeleted(matched));
+    });
     const existingUserIds = new Set<string>(
-      requests.map((r: any) => String(r.userId || r.uid || '')).filter(Boolean)
+      merged.map((r: any) => String(r.userId || r.uid || '')).filter(Boolean)
     );
 
     const seenUsers = new Set<string>();
     Object.values(usersMap).forEach((u: any) => {
-      if (!u?.docId || seenUsers.has(u.docId)) return;
+      if (!u?.docId || u.isDeleted || seenUsers.has(u.docId)) return;
       seenUsers.add(u.docId);
 
       // Skip if this user already has a document in monetization_requests
@@ -1215,7 +1256,7 @@ export const MonetizationPage = () => {
     });
 
     return merged;
-  }, [requests, usersMap]);
+  }, [requests, usersMap, usersLoaded]);
 
   // Live 60% / 40% AdMob + Monetized View Revenue Calculation (ONLY for isMonetized == true / Approved users)
   const revenueSummary = React.useMemo(() => {

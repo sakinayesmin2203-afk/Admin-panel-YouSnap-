@@ -32,6 +32,7 @@ import {
   deleteMediaFromFirestore,
   getUserMonetizationApplicationStatus,
   isMediaRestricted,
+  isRecordDeleted,
   normalizeMediaDoc,
   normalizeUserDoc,
 } from '../lib/firestoreAdapters';
@@ -68,7 +69,9 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        const normalizedUsers = snapshot.docs.map((d) => normalizeUserDoc(d));
+        const normalizedUsers = snapshot.docs
+          .map((d) => normalizeUserDoc(d))
+          .filter((u) => !u.isDeleted);
         setUsersList(normalizedUsers);
         setLoading(false);
         setError(null);
@@ -104,7 +107,9 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     const unsubMonetization = onSnapshot(
       query(collection(db, 'monetization_requests')),
       (snapshot) => {
-        const docs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        const docs = snapshot.docs
+          .filter((d) => !isRecordDeleted(d.data()))
+          .map((d) => ({ id: d.id, ...d.data() }));
         setMonetizationReqs(docs);
       },
       () => {}
@@ -153,6 +158,19 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
 
     return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   }, [mediaByCollection, usersMap]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (previewItem && !allUploads.some((m) => m.mediaKey === previewItem.mediaKey)) {
+      setPreviewItem(null);
+    }
+    if (warningModalItem && !allUploads.some((m) => m.mediaKey === warningModalItem.mediaKey)) {
+      setWarningModalItem(null);
+    }
+    if (deleteModalItem && !allUploads.some((m) => m.mediaKey === deleteModalItem.mediaKey)) {
+      setDeleteModalItem(null);
+    }
+  }, [allUploads, previewItem, warningModalItem, deleteModalItem, loading]);
 
   const postsCount = mediaByCollection.posts.length;
   const reelsCount = mediaByCollection.reels.length + mediaByCollection.videos.length;

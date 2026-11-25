@@ -100,6 +100,7 @@ export function normalizeUserDoc(docSnap: QueryDocumentSnapshot<DocumentData> | 
     monetization: monetizationStatus,
     totalEarnings: data.totalEarnings || data.earnings || '₹0',
     suspendReason: data.suspendReason || data.suspensionReason || data.banReason || data.restrictionReason || '',
+    isDeleted: isUserDeleted(data),
   };
 }
 
@@ -272,12 +273,7 @@ export function normalizeMediaDoc(
       ? 'Live Upload'
       : 'Video';
 
-  const isDeleted = Boolean(
-    data.isDeleted === true ||
-    data.deleted === true ||
-    data.deletedAt ||
-    String(data.status || '').toLowerCase() === 'deleted'
-  );
+  const isDeleted = isMediaDeleted(data);
 
   const rawMediaStatus = String(data.status || '').trim().toLowerCase();
   const isMediaBanned = Boolean(data.isBanned === true || rawMediaStatus === 'banned');
@@ -343,14 +339,49 @@ export function normalizeMediaDoc(
   };
 }
 
-export function isMediaDeleted(data: any): boolean {
-  if (!data) return false;
+function isTruthyTimestampOrFlag(val: any): boolean {
+  if (!val) return false;
+  if (typeof val === 'string') {
+    const clean = val.trim().toLowerCase();
+    return Boolean(clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false');
+  }
+  return true;
+}
+
+export function isRecordDeleted(data: any): boolean {
+  if (!data || typeof data !== 'object') return false;
+  const st = String(data.status || data.accountStatus || data.state || data.visibility || '')
+    .trim()
+    .toLowerCase();
+
   return Boolean(
     data.isDeleted === true ||
     data.deleted === true ||
-    data.deletedAt ||
-    String(data.status || '').toLowerCase() === 'deleted'
+    data.isRemoved === true ||
+    data.removed === true ||
+    data.isArchived === true ||
+    data.archived === true ||
+    data.isHidden === true ||
+    data.hidden === true ||
+    data.isActive === false ||
+    data.active === false ||
+    isTruthyTimestampOrFlag(data.deletedAt) ||
+    isTruthyTimestampOrFlag(data.removedAt) ||
+    isTruthyTimestampOrFlag(data.archivedAt) ||
+    st === 'deleted' ||
+    st === 'removed' ||
+    st === 'archived' ||
+    st === 'hidden' ||
+    st === 'inactive'
   );
+}
+
+export function isUserDeleted(data: any): boolean {
+  return isRecordDeleted(data);
+}
+
+export function isMediaDeleted(data: any): boolean {
+  return isRecordDeleted(data);
 }
 
 export function isMediaRestricted(item: any): boolean {

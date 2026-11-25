@@ -10,6 +10,7 @@ import {
   serverTimestamp,
   addDoc
 } from 'firebase/firestore';
+import { isMediaDeleted, isMediaRestricted, isUserDeleted } from '../lib/firestoreAdapters';
 import { 
   Smartphone, 
   Wifi, 
@@ -53,10 +54,10 @@ export default function YouSnapSimulator({ isOpen, onClose, onNewSupportTicket }
     const unsub = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
-        const users = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-        if (users.length > 0) {
-          setAvailableUsers(users);
-        }
+        const users = snapshot.docs
+          .filter(d => !isUserDeleted(d.data()))
+          .map(d => ({ id: d.id, ...d.data() }));
+        setAvailableUsers(users);
       },
       (err) => handleFirestoreError(err, OperationType.GET, 'users')
     );
@@ -72,7 +73,7 @@ export default function YouSnapSimulator({ isOpen, onClose, onNewSupportTicket }
     const unsubUser = onSnapshot(
       doc(db, 'users', selectedUserId),
       (docSnap) => {
-        if (docSnap.exists()) {
+        if (docSnap.exists() && !isUserDeleted(docSnap.data())) {
           const data: any = docSnap.data();
           setUserState((prev: any) => ({
             ...prev,
@@ -87,8 +88,7 @@ export default function YouSnapSimulator({ isOpen, onClose, onNewSupportTicket }
             payoutStatus: data.payoutStatus || 'Scheduled'
           }));
         } else {
-          // Fallback if document does not exist yet
-          fallbackUserSetup();
+          setUserState(null);
         }
       },
       (err) => {
@@ -159,20 +159,25 @@ export default function YouSnapSimulator({ isOpen, onClose, onNewSupportTicket }
     // Live media feed items from Firestore
     const unsubsMedia = ['posts', 'reels', 'videos'].map((colName) =>
       onSnapshot(query(collection(db, colName)), (snapshot) => {
-        const docs = snapshot.docs.map(d => {
-          const data = d.data();
-          return {
-            id: d.id,
-            docId: d.id,
-            sourceCollection: colName,
-            title: data.caption || data.title || 'YouSnap Media',
-            uploader: data.uploader || data.username || 'Creator',
-            views: Number(data.views ?? data.viewsCount ?? 120),
-            likes: Number(data.likes ?? data.likesCount ?? 14),
-            thumbnail: data.thumbnailURL || data.mediaUrl || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=400&auto=format&fit=crop&q=80',
-            ...data
-          };
-        });
+        const docs = snapshot.docs
+          .filter(d => {
+            const data = d.data();
+            return !isMediaDeleted(data) && !isMediaRestricted(data);
+          })
+          .map(d => {
+            const data = d.data();
+            return {
+              id: d.id,
+              docId: d.id,
+              sourceCollection: colName,
+              title: data.caption || data.title || 'YouSnap Media',
+              uploader: data.uploader || data.username || 'Creator',
+              views: Number(data.views ?? data.viewsCount ?? 120),
+              likes: Number(data.likes ?? data.likesCount ?? 14),
+              thumbnail: data.thumbnailURL || data.mediaUrl || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=400&auto=format&fit=crop&q=80',
+              ...data
+            };
+          });
         setBoostedVideos(prev => {
           const others = prev.filter(p => p.sourceCollection !== colName);
           return [...others, ...docs];
