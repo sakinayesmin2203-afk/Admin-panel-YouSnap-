@@ -13,9 +13,11 @@ import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
   buildUsersLookupMap,
+  collectDeletedUserKeys,
   formatTimeLabel,
   getUserMonetizationApplicationStatus,
   isAppReportDoc,
+  isMediaOwnedByDeletedUser,
   isMediaRestricted,
   isRecordDeleted,
   normalizeAppReport,
@@ -59,6 +61,7 @@ export interface AdminNotificationItem {
 export function useAdminActivityNotifications(enabled: boolean) {
   const [adminDocs, setAdminDocs] = useState<any[]>([]);
   const [usersList, setUsersList] = useState<any[]>([]);
+  const [deletedUserKeys, setDeletedUserKeys] = useState<Set<string>>(() => new Set());
   const [mediaByCol, setMediaByCol] = useState<Record<string, any[]>>({});
   const [monetizationReqs, setMonetizationReqs] = useState<any[]>([]);
   const [reportsColDocs, setReportsColDocs] = useState<any[]>([]);
@@ -113,6 +116,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
+        setDeletedUserKeys(collectDeletedUserKeys(snapshot.docs));
         setUsersList(
           snapshot.docs
             .map((d) => normalizeUserDoc(d))
@@ -219,6 +223,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
     // B. Photo / Video / Reel / Story Uploads from App
     MEDIA_COLLECTIONS.forEach((colName) => {
       (mediaByCol[colName] || []).forEach((item) => {
+        if (isMediaOwnedByDeletedUser(item, deletedUserKeys)) return;
         const id = `live_upload:${colName}:${item.docId}`;
         if (dismissedIds.has(id)) return;
         const owner = item.userId ? usersMap[item.userId] : undefined;
@@ -371,6 +376,7 @@ export function useAdminActivityNotifications(enabled: boolean) {
     mediaByCol,
     monetizationReqs,
     usersList,
+    deletedUserKeys,
     reportsColDocs,
     supportDocs,
     usersMap,

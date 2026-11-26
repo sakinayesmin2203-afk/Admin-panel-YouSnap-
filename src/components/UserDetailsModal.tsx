@@ -100,6 +100,13 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
   useEffect(() => {
     if (!isOpen || !user) return;
     setMediaLoading(true);
+    setMediaByCollection({
+      posts: [],
+      reels: [],
+      stories: [],
+      videos: [],
+      live_uploads: [],
+    });
 
     const unsubs = MEDIA_COLLECTIONS.map((colName: MediaSourceCollection) =>
       onSnapshot(

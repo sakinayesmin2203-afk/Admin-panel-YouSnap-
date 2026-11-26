@@ -236,6 +236,12 @@ export function normalizeMediaDoc(
     data.uploaderId ??
     data.authorId ??
     data.creatorId ??
+    data.ownerId ??
+    data.user_id ??
+    data.author_id ??
+    data.creator_id ??
+    data.uploader_id ??
+    data.postedBy ??
     ''
   );
 
@@ -356,23 +362,57 @@ export function isRecordDeleted(data: any): boolean {
 
   return Boolean(
     data.isDeleted === true ||
+    data.is_deleted === true ||
     data.deleted === true ||
+    data.softDeleted === true ||
+    data.soft_deleted === true ||
+    data.deletedByUser === true ||
+    data.userDeleted === true ||
     data.isRemoved === true ||
+    data.is_removed === true ||
     data.removed === true ||
+    data.removedByUser === true ||
     data.isArchived === true ||
+    data.is_archived === true ||
     data.archived === true ||
     data.isHidden === true ||
+    data.is_hidden === true ||
     data.hidden === true ||
+    data.isTrashed === true ||
+    data.trashed === true ||
+    data.isExpired === true ||
+    data.expired === true ||
     data.isActive === false ||
+    data.is_active === false ||
     data.active === false ||
+    data.isVisible === false ||
+    data.is_visible === false ||
+    data.visible === false ||
+    data.isPublished === false ||
+    data.is_published === false ||
+    data.published === false ||
     isTruthyTimestampOrFlag(data.deletedAt) ||
+    isTruthyTimestampOrFlag(data.deleted_at) ||
+    isTruthyTimestampOrFlag(data.deletedBy) ||
+    isTruthyTimestampOrFlag(data.deleted_by) ||
     isTruthyTimestampOrFlag(data.removedAt) ||
+    isTruthyTimestampOrFlag(data.removed_at) ||
+    isTruthyTimestampOrFlag(data.removedBy) ||
+    isTruthyTimestampOrFlag(data.removed_by) ||
     isTruthyTimestampOrFlag(data.archivedAt) ||
+    isTruthyTimestampOrFlag(data.archived_at) ||
     st === 'deleted' ||
+    st === 'deleted_by_user' ||
+    st === 'user_deleted' ||
     st === 'removed' ||
     st === 'archived' ||
     st === 'hidden' ||
-    st === 'inactive'
+    st === 'inactive' ||
+    st === 'trash' ||
+    st === 'trashed' ||
+    st === 'unpublished' ||
+    st === 'expired' ||
+    st === 'purged'
   );
 }
 
@@ -382,6 +422,38 @@ export function isUserDeleted(data: any): boolean {
 
 export function isMediaDeleted(data: any): boolean {
   return isRecordDeleted(data);
+}
+
+export function collectDeletedUserKeys(docs: Array<{ id: string; data: () => DocumentData }>): Set<string> {
+  const keys = new Set<string>();
+  docs.forEach((docSnap) => {
+    const data = typeof docSnap.data === 'function' ? docSnap.data() : {};
+    if (isUserDeleted(data)) {
+      if (docSnap.id) keys.add(String(docSnap.id));
+      if (data.uid) keys.add(String(data.uid));
+      if (data.id !== undefined && data.id !== null) keys.add(String(data.id));
+      if (data.username) keys.add(String(data.username).toLowerCase());
+    }
+  });
+  return keys;
+}
+
+export function isMediaOwnedByDeletedUser(media: any, deletedUserKeys: Set<string>): boolean {
+  if (!media || deletedUserKeys.size === 0) return false;
+  const ownerIds = [
+    media.userId,
+    media.uid,
+    media.uploaderId,
+    media.authorId,
+    media.creatorId,
+    media.ownerId,
+    media.postedBy,
+  ]
+    .filter(Boolean)
+    .map(String);
+  if (ownerIds.some((id) => deletedUserKeys.has(id))) return true;
+  if (media.username && deletedUserKeys.has(String(media.username).toLowerCase())) return true;
+  return false;
 }
 
 export function isMediaRestricted(item: any): boolean {
@@ -418,7 +490,15 @@ export function doesMediaBelongToUser(media: any, user: any): boolean {
       .filter(Boolean)
       .map((v) => String(v))
   );
-  const mediaOwnerIds = [media.userId, media.uid, media.uploaderId, media.authorId, media.creatorId]
+  const mediaOwnerIds = [
+    media.userId,
+    media.uid,
+    media.uploaderId,
+    media.authorId,
+    media.creatorId,
+    media.ownerId,
+    media.postedBy,
+  ]
     .filter(Boolean)
     .map((v) => String(v));
 

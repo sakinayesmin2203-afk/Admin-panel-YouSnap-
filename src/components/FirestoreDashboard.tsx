@@ -29,8 +29,10 @@ import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
   buildUsersLookupMap,
+  collectDeletedUserKeys,
   deleteMediaFromFirestore,
   getUserMonetizationApplicationStatus,
+  isMediaOwnedByDeletedUser,
   isMediaRestricted,
   isRecordDeleted,
   normalizeMediaDoc,
@@ -39,6 +41,7 @@ import {
 
 export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view: string) => void }) {
   const [usersList, setUsersList] = useState<any[]>([]);
+  const [deletedUserKeys, setDeletedUserKeys] = useState<Set<string>>(() => new Set());
   const [mediaByCollection, setMediaByCollection] = useState<Record<string, any[]>>({
     posts: [],
     reels: [],
@@ -69,6 +72,7 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
+        setDeletedUserKeys(collectDeletedUserKeys(snapshot.docs));
         const normalizedUsers = snapshot.docs
           .map((d) => normalizeUserDoc(d))
           .filter((u) => !u.isDeleted);
@@ -146,6 +150,7 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     MEDIA_COLLECTIONS.forEach((colName) => {
       const items = mediaByCollection[colName] || [];
       items.forEach((item) => {
+        if (isMediaOwnedByDeletedUser(item, deletedUserKeys)) return;
         const owner = usersMap[item.userId] || usersMap[item.username];
         merged.push({
           ...item,
@@ -157,7 +162,7 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     });
 
     return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-  }, [mediaByCollection, usersMap]);
+  }, [mediaByCollection, usersMap, deletedUserKeys]);
 
   useEffect(() => {
     if (loading) return;
@@ -172,9 +177,11 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     }
   }, [allUploads, previewItem, warningModalItem, deleteModalItem, loading]);
 
-  const postsCount = mediaByCollection.posts.length;
-  const reelsCount = mediaByCollection.reels.length + mediaByCollection.videos.length;
-  const storiesCount = mediaByCollection.stories.length;
+  const postsCount = mediaByCollection.posts.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length;
+  const reelsCount =
+    mediaByCollection.reels.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length +
+    mediaByCollection.videos.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length;
+  const storiesCount = mediaByCollection.stories.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length;
 
   // Action: Toggle Algorithmic Viral Boost in Firestore
   const handleToggleViralBoost = async (item: any) => {

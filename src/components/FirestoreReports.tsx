@@ -149,6 +149,16 @@ export default function FirestoreReports() {
     );
   }, [reportsColDocs, supportReportDocs]);
 
+  // Auto-close media preview in Reports if the photo/video/story is deleted from the App
+  useEffect(() => {
+    if (!mediaLoaded || !previewMedia) return;
+    const key = previewMedia.docId || previewMedia.id || previewMedia.videoId;
+    const liveItem = key ? mediaMap[key] : undefined;
+    if (!liveItem || liveItem.isDeleted) {
+      setPreviewMedia(null);
+    }
+  }, [mediaMap, previewMedia, mediaLoaded]);
+
   const filteredReports = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return allReports.filter((rep) => {

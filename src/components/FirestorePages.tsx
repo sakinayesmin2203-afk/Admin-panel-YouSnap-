@@ -47,8 +47,11 @@ import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
   buildUsersLookupMap,
+  collectDeletedUserKeys,
   deleteMediaFromFirestore,
+  doesMediaBelongToUser,
   getUserMonetizationApplicationStatus,
+  isMediaOwnedByDeletedUser,
   isMediaRestricted,
   isRecordDeleted,
   isUserDeleted,
@@ -162,6 +165,8 @@ export const FirebaseStatusBar = () => {
 // ==========================================
 export const UsersPage = () => {
   const [users, setUsers] = useState<any[]>([]);
+  const [mediaByCol, setMediaByCol] = useState<Record<string, any[]>>({});
+  const [mediaLoaded, setMediaLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -197,9 +202,34 @@ export const UsersPage = () => {
       }
     );
 
+    const unsubMedia = MEDIA_COLLECTIONS.map((colName: MediaSourceCollection) =>
+      onSnapshot(
+        query(collection(db, colName)),
+        (snapshot) => {
+          const items = snapshot.docs
+            .map((d) => normalizeMediaDoc(d, colName))
+            .filter((item) => !item.isDeleted && !isMediaRestricted(item));
+          setMediaByCol((prev) => ({ ...prev, [colName]: items }));
+          setMediaLoaded(true);
+        },
+        () => {}
+      )
+    );
+
     // Critical: Clean up listener to prevent memory leak
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      unsubMedia.forEach((u) => u());
+    };
   }, []);
+
+  const allActiveMedia = React.useMemo(() => {
+    const merged: any[] = [];
+    MEDIA_COLLECTIONS.forEach((colName) => {
+      merged.push(...(mediaByCol[colName] || []));
+    });
+    return merged;
+  }, [mediaByCol]);
 
   // Auto-close UserDetailsModal if the user was deleted from Firestore/App
   useEffect(() => {
@@ -356,7 +386,11 @@ export const UsersPage = () => {
                             {user.displayName || 'Unnamed User'}
                           </p>
                           <p className="text-[10px] text-slate-400 font-mono">
-                            @{user.username || 'user'} • {Number(user.followersCount || 0).toLocaleString()} followers • {Number(user.postCount || 0)} posts
+                            @{user.username || 'user'} • {Number(user.followersCount || 0).toLocaleString()} followers •{' '}
+                            {mediaLoaded
+                              ? allActiveMedia.filter((m) => doesMediaBelongToUser(m, user)).length
+                              : Number(user.postCount || 0)}{' '}
+                            posts
                           </p>
                         </div>
                       </div>
@@ -424,6 +458,7 @@ export const VideosPage = () => {
     live_uploads: [],
   });
   const [usersMap, setUsersMap] = useState<Record<string, any>>({});
+  const [deletedUserKeys, setDeletedUserKeys] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -497,6 +532,7 @@ export const VideosPage = () => {
     const unsubUsers = onSnapshot(
       query(collection(db, 'users')),
       (snapshot) => {
+        setDeletedUserKeys(collectDeletedUserKeys(snapshot.docs));
         const normalizedUsers = snapshot.docs
           .map((d) => normalizeUserDoc(d))
           .filter((u) => !u.isDeleted);
@@ -532,6 +568,7 @@ export const VideosPage = () => {
     const merged: any[] = [];
     MEDIA_COLLECTIONS.forEach((colName) => {
       (mediaByCollection[colName] || []).forEach((item) => {
+        if (isMediaOwnedByDeletedUser(item, deletedUserKeys)) return;
         const owner = usersMap[item.userId] || usersMap[item.username];
         merged.push({
           ...item,
@@ -542,7 +579,7 @@ export const VideosPage = () => {
       });
     });
     return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
-  }, [mediaByCollection, usersMap]);
+  }, [mediaByCollection, usersMap, deletedUserKeys]);
 
   // Auto-close open Preview or Viral modal if the item is deleted from the App
   useEffect(() => {
