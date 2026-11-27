@@ -36,6 +36,7 @@ import {
 import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
+  deduplicateMediaItems,
   deleteMediaFromFirestore,
   doesMediaBelongToUser,
   isMediaRestricted,
@@ -132,7 +133,7 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
     MEDIA_COLLECTIONS.forEach((colName) => {
       merged.push(...(mediaByCollection[colName] || []));
     });
-    return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+    return deduplicateMediaItems(merged).sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   }, [mediaByCollection]);
 
   // Auto-close open media preview if deleted from the App in real time
@@ -297,14 +298,18 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
   const handleDeleteMedia = async (mediaItem: any) => {
     const col = mediaItem?.sourceCollection || 'videos';
     const docId = mediaItem?.docId || mediaItem?.id || mediaItem;
-    if (!window.confirm('Are you sure you want to delete this media item from Firestore?')) return;
+    if (!window.confirm('Are you sure you want to delete this media item from Firestore and Supabase Storage?')) return;
     try {
-      await deleteMediaFromFirestore(db, mediaItem);
-      showToast(`Media removed successfully from /${col}`);
+      const result = await deleteMediaFromFirestore(db, mediaItem);
+      const storageNotice =
+        result.deletedStorageKeys.length > 0
+          ? ` & ${result.deletedStorageKeys.length} storage file(s)`
+          : '';
+      showToast(`Media removed successfully from /${result.deletedDocs.map((d) => d.col).join(', /')}${storageNotice}`);
       setSelectedMedia(null);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${col}/${docId}`);
-      showToast('Failed to delete media — check Firestore Rules.');
+      showToast(err?.message || 'Failed to delete media — check Firestore Rules & Storage settings.');
     }
   };
 
@@ -330,25 +335,37 @@ export default function UserDetailsModal({ user, isOpen, onClose, showToast }: U
     if (!userDocId) return;
     setIsSubmitting(true);
     try {
+      const mediaErrors: string[] = [];
       if (deleteUserMediaAlso) {
+        const allUserDocs: any[] = [];
         for (const colName of MEDIA_COLLECTIONS) {
           try {
             const snap = await getDocs(collection(db, colName));
             const matching = snap.docs
               .map((d) => normalizeMediaDoc(d, colName))
               .filter((m) => doesMediaBelongToUser(m, currentUserData));
-            await Promise.all(
-              matching.map((m) => deleteDoc(doc(db, colName, m.docId)).catch(() => {}))
-            );
+            allUserDocs.push(...matching);
           } catch {
             // ignore inaccessible optional collections
+          }
+        }
+        const dedupedUserDocs = deduplicateMediaItems(allUserDocs);
+        for (const m of dedupedUserDocs) {
+          try {
+            await deleteMediaFromFirestore(db, m);
+          } catch (mediaErr: any) {
+            mediaErrors.push(mediaErr?.message || `Failed to delete ${m.sourceCollection}/${m.docId}`);
           }
         }
       }
 
       await deleteDoc(doc(db, 'users', userDocId));
       setShowDeleteUserModal(false);
-      showToast(`User "${currentUserData.displayName || currentUserData.email || userDocId}" deleted from Firestore!`);
+      if (mediaErrors.length > 0) {
+        showToast(`User deleted, but some media/storage cleanup failed: ${mediaErrors[0]}`);
+      } else {
+        showToast(`User "${currentUserData.displayName || currentUserData.email || userDocId}" deleted from Firestore!`);
+      }
       onClose();
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `users/${userDocId}`);

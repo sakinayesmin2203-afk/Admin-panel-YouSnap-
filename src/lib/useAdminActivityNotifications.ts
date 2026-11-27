@@ -14,6 +14,7 @@ import {
   MediaSourceCollection,
   buildUsersLookupMap,
   collectDeletedUserKeys,
+  deduplicateMediaItems,
   formatTimeLabel,
   getUserMonetizationApplicationStatus,
   isAppReportDoc,
@@ -220,28 +221,34 @@ export function useAdminActivityNotifications(enabled: boolean) {
       });
     });
 
-    // B. Photo / Video / Reel / Story Uploads from App
+    // B. Photo / Video / Reel / Story Uploads from App (deduplicated between /reels and /videos)
+    const rawMediaUploads: any[] = [];
     MEDIA_COLLECTIONS.forEach((colName) => {
       (mediaByCol[colName] || []).forEach((item) => {
-        if (isMediaOwnedByDeletedUser(item, deletedUserKeys)) return;
-        const id = `live_upload:${colName}:${item.docId}`;
-        if (dismissedIds.has(id)) return;
-        const owner = item.userId ? usersMap[item.userId] : undefined;
-        const creatorName =
-          item.uploader || owner?.displayName || item.username || owner?.username || 'YouSnap Creator';
-        const captionPreview = item.caption ? `: "${item.caption}"` : '';
-        list.push({
-          id,
-          source: 'live_activity',
-          type: 'Uploads',
-          targetUser: creatorName,
-          targetAvatar: owner?.photoURL || item.avatar || item.thumbnailURL || '',
-          message: `New ${item.sourceLabel} (${item.mediaKind}) uploaded${captionPreview}`,
-          unread: !readIds.has(id),
-          timeStr: item.timeLabel || 'Recently',
-          createdAtMs: item.createdAtMs || 0,
-          linkTo: 'Videos',
-        });
+        if (!isMediaOwnedByDeletedUser(item, deletedUserKeys)) {
+          rawMediaUploads.push(item);
+        }
+      });
+    });
+    deduplicateMediaItems(rawMediaUploads).forEach((item) => {
+      const colName = item.sourceCollection || 'videos';
+      const id = `live_upload:${colName}:${item.docId}`;
+      if (dismissedIds.has(id)) return;
+      const owner = item.userId ? usersMap[item.userId] : undefined;
+      const creatorName =
+        item.uploader || owner?.displayName || item.username || owner?.username || 'YouSnap Creator';
+      const captionPreview = item.caption ? `: "${item.caption}"` : '';
+      list.push({
+        id,
+        source: 'live_activity',
+        type: 'Uploads',
+        targetUser: creatorName,
+        targetAvatar: owner?.photoURL || item.avatar || item.thumbnailURL || '',
+        message: `New ${item.sourceLabel} (${item.mediaKind}) uploaded${captionPreview}`,
+        unread: !readIds.has(id),
+        timeStr: item.timeLabel || 'Recently',
+        createdAtMs: item.createdAtMs || 0,
+        linkTo: 'Videos',
       });
     });
 

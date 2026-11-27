@@ -32,6 +32,7 @@ import {
   MEDIA_COLLECTIONS,
   MediaSourceCollection,
   buildUsersLookupMap,
+  deduplicateMediaItems,
   deleteMediaFromFirestore,
   getUserMonetizationApplicationStatus,
   isMediaRestricted,
@@ -150,7 +151,7 @@ export default function FirestoreRestrictedAccounts() {
     MEDIA_COLLECTIONS.forEach((colName) => {
       merged.push(...(blockedMediaByCol[colName] || []));
     });
-    return merged;
+    return deduplicateMediaItems(merged);
   }, [blockedMediaByCol]);
 
   // Action 1: Lift User Account Restriction (Unsuspend / Unban)
@@ -239,13 +240,17 @@ export default function FirestoreRestrictedAccounts() {
   const handleDeleteMedia = async (video: any) => {
     const col = video.sourceCollection || 'videos';
     const docId = video.docId || video.id;
-    if (!window.confirm('Permanently delete this blocked media from Firestore?')) return;
+    if (!window.confirm('Permanently delete this blocked media from Firestore and Supabase Storage?')) return;
     try {
-      await deleteMediaFromFirestore(db, video);
-      showToast('Media permanently deleted');
+      const result = await deleteMediaFromFirestore(db, video);
+      const storageNote =
+        result.deletedStorageKeys.length > 0
+          ? ` & ${result.deletedStorageKeys.length} YouSnap Storage file(s)`
+          : '';
+      showToast(`Media deleted from /${result.deletedDocs.map((d) => d.col).join(', /')}${storageNote}`);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${col}/${docId}`);
-      showToast('Failed to delete media');
+      showToast(err?.message || 'Failed to delete media — check Firestore Rules & Storage settings.');
     }
   };
 

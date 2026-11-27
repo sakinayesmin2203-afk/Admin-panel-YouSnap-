@@ -48,6 +48,7 @@ import {
   MediaSourceCollection,
   buildUsersLookupMap,
   collectDeletedUserKeys,
+  deduplicateMediaItems,
   deleteMediaFromFirestore,
   doesMediaBelongToUser,
   getUserMonetizationApplicationStatus,
@@ -228,7 +229,7 @@ export const UsersPage = () => {
     MEDIA_COLLECTIONS.forEach((colName) => {
       merged.push(...(mediaByCol[colName] || []));
     });
-    return merged;
+    return deduplicateMediaItems(merged);
   }, [mediaByCol]);
 
   // Auto-close UserDetailsModal if the user was deleted from Firestore/App
@@ -578,7 +579,7 @@ export const VideosPage = () => {
         });
       });
     });
-    return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+    return deduplicateMediaItems(merged).sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   }, [mediaByCollection, usersMap, deletedUserKeys]);
 
   // Auto-close open Preview or Viral modal if the item is deleted from the App
@@ -592,19 +593,23 @@ export const VideosPage = () => {
     }
   }, [videos, previewVideo, viralModalItem, loading]);
 
-  // Delete Media in Firestore
+  // Delete Media in Firestore + Supabase Storage (YouSnap bucket)
   const handleDeleteVideo = async (item: any) => {
     const col = item.sourceCollection || 'videos';
     const docId = item.docId || item.id;
     const caption = item.caption || docId;
-    if (!window.confirm(`Are you sure you want to delete "${caption}" from /${col}?`)) return;
+    if (!window.confirm(`Are you sure you want to delete "${caption}" from Firestore and Supabase Storage?`)) return;
     try {
-      await deleteMediaFromFirestore(db, item);
-      showToast(`Deleted from /${col} successfully`);
+      const result = await deleteMediaFromFirestore(db, item);
+      const storageNotice =
+        result.deletedStorageKeys.length > 0
+          ? ` & ${result.deletedStorageKeys.length} file(s) from YouSnap Storage`
+          : '';
+      showToast(`Deleted from /${result.deletedDocs.map((d) => d.col).join(', /')}${storageNotice}`);
       if (previewVideo?.mediaKey === item.mediaKey) setPreviewVideo(null);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${col}/${docId}`);
-      showToast('Failed to delete — check Firestore Rules permissions for Admin.');
+      showToast(err?.message || 'Failed to delete media — check Firestore Rules & Storage configuration.');
     }
   };
 
@@ -1093,12 +1098,23 @@ export const VideosPage = () => {
       )}
 
       {/* Floating Toast Notice */}
-      {toastMessage && (
-        <div className="fixed bottom-6 left-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 text-xs border border-emerald-500/30 animate-in fade-in slide-in-from-bottom-2">
-          <CheckCircle size={16} className="text-emerald-400" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
+      {toastMessage && (() => {
+        const isErr = /fail|error|denied|missing|unavailable/i.test(toastMessage);
+        return (
+          <div
+            className={`fixed bottom-6 left-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 text-xs border animate-in fade-in slide-in-from-bottom-2 max-w-md ${
+              isErr ? 'border-rose-500/50' : 'border-emerald-500/30'
+            }`}
+          >
+            {isErr ? (
+              <AlertTriangle size={16} className="text-rose-400 shrink-0" />
+            ) : (
+              <CheckCircle size={16} className="text-emerald-400 shrink-0" />
+            )}
+            <span>{toastMessage}</span>
+          </div>
+        );
+      })()}
     </div>
   );
 };

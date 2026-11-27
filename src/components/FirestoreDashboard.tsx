@@ -30,6 +30,7 @@ import {
   MediaSourceCollection,
   buildUsersLookupMap,
   collectDeletedUserKeys,
+  deduplicateMediaItems,
   deleteMediaFromFirestore,
   getUserMonetizationApplicationStatus,
   isMediaOwnedByDeletedUser,
@@ -144,7 +145,7 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     return pendingInCollection + pendingInUsers;
   }, [monetizationReqs, usersList]);
 
-  // Merge all uploaded posts, reels, stories, videos, and live_uploads, enriched with uploader profile
+  // Merge all uploaded posts, reels, stories, videos, and live_uploads, enriched with uploader profile & deduplicated
   const allUploads = useMemo(() => {
     const merged: any[] = [];
     MEDIA_COLLECTIONS.forEach((colName) => {
@@ -161,7 +162,7 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
       });
     });
 
-    return merged.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
+    return deduplicateMediaItems(merged).sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0));
   }, [mediaByCollection, usersMap, deletedUserKeys]);
 
   useEffect(() => {
@@ -177,11 +178,11 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     }
   }, [allUploads, previewItem, warningModalItem, deleteModalItem, loading]);
 
-  const postsCount = mediaByCollection.posts.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length;
-  const reelsCount =
-    mediaByCollection.reels.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length +
-    mediaByCollection.videos.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length;
-  const storiesCount = mediaByCollection.stories.filter((m) => !isMediaOwnedByDeletedUser(m, deletedUserKeys)).length;
+  const postsCount = allUploads.filter((m) => m.sourceCollection === 'posts').length;
+  const reelsCount = allUploads.filter(
+    (m) => m.sourceCollection === 'reels' || m.sourceCollection === 'videos'
+  ).length;
+  const storiesCount = allUploads.filter((m) => m.sourceCollection === 'stories').length;
 
   // Action: Toggle Algorithmic Viral Boost in Firestore
   const handleToggleViralBoost = async (item: any) => {
@@ -221,19 +222,24 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
     }
   };
 
-  // Action: Delete media item from its Firestore collection
+  // Action: Delete media item from Firestore + Supabase Storage (YouSnap bucket)
   const handleConfirmDelete = async () => {
     if (!deleteModalItem) return;
     const col = deleteModalItem.sourceCollection || 'videos';
     const docId = deleteModalItem.docId || deleteModalItem.id;
     try {
-      await deleteMediaFromFirestore(db, deleteModalItem);
-      showToast(`"${deleteModalItem.title}" deleted from Firestore /${col}`);
+      const result = await deleteMediaFromFirestore(db, deleteModalItem);
+      const storageSuffix =
+        result.deletedStorageKeys.length > 0
+          ? ` and ${result.deletedStorageKeys.length} YouSnap Storage file(s)`
+          : '';
+      showToast(`"${deleteModalItem.title}" deleted from Firestore /${result.deletedDocs.map((d) => d.col).join(', /')}${storageSuffix}`);
       setDeleteModalItem(null);
       if (previewItem?.mediaKey === deleteModalItem.mediaKey) setPreviewItem(null);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${col}/${docId}`);
-      showToast('Failed to delete media — check Firestore Rules for Admin delete permission.');
+      setDeleteModalItem(null);
+      showToast(err?.message || 'Failed to delete media — check Firestore Rules & Storage settings.');
     }
   };
 
@@ -513,12 +519,23 @@ export default function FirestoreDashboard({ onNavigate }: { onNavigate?: (view:
       )}
 
       {/* Floating Toast Notice */}
-      {toastMessage && (
-        <div className="fixed bottom-6 left-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 text-xs border border-emerald-500/30 animate-in fade-in slide-in-from-bottom-2">
-          <CheckCircle2 size={16} className="text-emerald-400" />
-          <span>{toastMessage}</span>
-        </div>
-      )}
+      {toastMessage && (() => {
+        const isErr = /fail|error|denied|missing|unavailable/i.test(toastMessage);
+        return (
+          <div
+            className={`fixed bottom-6 left-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 text-xs border animate-in fade-in slide-in-from-bottom-2 max-w-md ${
+              isErr ? 'border-rose-500/50' : 'border-emerald-500/30'
+            }`}
+          >
+            {isErr ? (
+              <AlertTriangle size={16} className="text-rose-400 shrink-0" />
+            ) : (
+              <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+            )}
+            <span>{toastMessage}</span>
+          </div>
+        );
+      })()}
     </div>
   );
 }

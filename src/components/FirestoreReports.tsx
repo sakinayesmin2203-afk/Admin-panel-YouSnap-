@@ -261,15 +261,19 @@ export default function FirestoreReports() {
   };
 
   const handleDeleteReportedMedia = async (report: any, media: any) => {
-    if (!window.confirm(`Permanently delete reported media "${media.caption || media.docId}" from Firestore?`)) return;
+    if (!window.confirm(`Permanently delete reported media "${media.caption || media.docId}" from Firestore and Supabase Storage?`)) return;
     setProcessingKey(report.reportKey);
     try {
-      await deleteMediaFromFirestore(db, media);
+      const result = await deleteMediaFromFirestore(db, media);
       await markReportResolved(report, 'Reported media permanently deleted by Admin.').catch(() => {});
-      showToast('Reported media deleted & report marked Resolved');
+      const storageNote =
+        result.deletedStorageKeys.length > 0
+          ? ` & ${result.deletedStorageKeys.length} YouSnap Storage file(s)`
+          : '';
+      showToast(`Reported media deleted from /${result.deletedDocs.map((d) => d.col).join(', /')}${storageNote} & report resolved`);
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${media.sourceCollection}/${media.docId}`);
-      showToast('Failed to delete reported media');
+      showToast(err?.message || 'Failed to delete reported media — check Firestore Rules & Storage settings.');
     } finally {
       setProcessingKey(null);
     }

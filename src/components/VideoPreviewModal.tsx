@@ -63,18 +63,22 @@ export default function VideoPreviewModal({
   const commentsCount = parseInt(video.comments ?? 0).toLocaleString();
   const sharesCount = parseInt(video.shares ?? 0).toLocaleString();
 
-  // Handle Delete / Block Media from its Firestore source collection
+  // Handle Delete / Block Media from Firestore + Supabase Storage
   const handleDeleteVideo = async () => {
-    if (!window.confirm(`Are you sure you want to block and delete "${caption}"?`)) return;
+    if (!window.confirm(`Are you sure you want to permanently delete "${caption}" from Firestore and Supabase Storage?`)) return;
     setIsDeleting(true);
     try {
-      const { col, docId } = await deleteMediaFromFirestore(db, video);
-      showToast(`Media deleted successfully from Firestore /${col}`);
-      if (onVideoDeleted) onVideoDeleted(docId);
+      const result = await deleteMediaFromFirestore(db, video);
+      const storageNote =
+        result.deletedStorageKeys.length > 0
+          ? ` & ${result.deletedStorageKeys.length} file(s) from YouSnap Storage`
+          : '';
+      showToast(`Media deleted from /${result.deletedDocs.map((d) => d.col).join(', /')}${storageNote}`);
+      if (onVideoDeleted) onVideoDeleted(result.docId);
       onClose();
     } catch (err: any) {
       handleFirestoreError(err, OperationType.DELETE, `${sourceCollection}/${videoId}`);
-      showToast('Failed to delete media — check Firestore Rules permissions for Admin.');
+      showToast(err?.message || 'Failed to delete media — check Firestore Rules & Storage configuration.');
     } finally {
       setIsDeleting(false);
     }

@@ -2,32 +2,32 @@ import { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { db } from '../../lib/firebase';
 import { collection, onSnapshot, query } from 'firebase/firestore';
-import { isMediaDeleted } from '../lib/firestoreAdapters';
+import {
+  MEDIA_COLLECTIONS,
+  MediaSourceCollection,
+  deduplicateMediaItems,
+  isMediaRestricted,
+  normalizeMediaDoc,
+} from '../lib/firestoreAdapters';
 
 export default function AnalyticsChart() {
-  const [counts, setCounts] = useState<Record<string, number>>({
-    Posts: 0,
-    Reels: 0,
-    Stories: 0,
-    Videos: 0,
-    Live: 0,
+  const [mediaByCol, setMediaByCol] = useState<Record<string, any[]>>({
+    posts: [],
+    reels: [],
+    stories: [],
+    videos: [],
+    live_uploads: [],
   });
 
   useEffect(() => {
-    const sources: Array<{ col: string; label: string }> = [
-      { col: 'posts', label: 'Posts' },
-      { col: 'reels', label: 'Reels' },
-      { col: 'stories', label: 'Stories' },
-      { col: 'videos', label: 'Videos' },
-      { col: 'live_uploads', label: 'Live' },
-    ];
-
-    const unsubs = sources.map(({ col, label }) =>
+    const unsubs = MEDIA_COLLECTIONS.map((col: MediaSourceCollection) =>
       onSnapshot(
         query(collection(db, col)),
         (snapshot) => {
-          const activeCount = snapshot.docs.filter((d) => !isMediaDeleted(d.data())).length;
-          setCounts((prev) => ({ ...prev, [label]: activeCount }));
+          const activeItems = snapshot.docs
+            .map((d) => normalizeMediaDoc(d, col))
+            .filter((item) => !item.isDeleted && !isMediaRestricted(item));
+          setMediaByCol((prev) => ({ ...prev, [col]: activeItems }));
         },
         () => {}
       )
@@ -36,12 +36,20 @@ export default function AnalyticsChart() {
     return () => unsubs.forEach((u) => u());
   }, []);
 
+  const dedupedMedia = deduplicateMediaItems([
+    ...(mediaByCol.posts || []),
+    ...(mediaByCol.reels || []),
+    ...(mediaByCol.stories || []),
+    ...(mediaByCol.videos || []),
+    ...(mediaByCol.live_uploads || []),
+  ]);
+
   const chartData = [
-    { name: 'Posts', uploads: counts.Posts },
-    { name: 'Reels', uploads: counts.Reels },
-    { name: 'Stories', uploads: counts.Stories },
-    { name: 'Videos', uploads: counts.Videos },
-    { name: 'Live', uploads: counts.Live },
+    { name: 'Posts', uploads: dedupedMedia.filter((m) => m.sourceCollection === 'posts').length },
+    { name: 'Reels', uploads: dedupedMedia.filter((m) => m.sourceCollection === 'reels').length },
+    { name: 'Stories', uploads: dedupedMedia.filter((m) => m.sourceCollection === 'stories').length },
+    { name: 'Videos', uploads: dedupedMedia.filter((m) => m.sourceCollection === 'videos').length },
+    { name: 'Live', uploads: dedupedMedia.filter((m) => m.sourceCollection === 'live_uploads').length },
   ];
 
   return (

@@ -5,11 +5,13 @@ import {
   doc,
   deleteDoc,
   getDoc,
+  getDocs,
   updateDoc,
   collection,
   addDoc,
   serverTimestamp,
 } from 'firebase/firestore';
+import { auth } from './firebase';
 import { sanitizeHttpsUrl } from './security';
 
 export type MediaSourceCollection = 'posts' | 'reels' | 'stories' | 'videos' | 'live_uploads';
@@ -511,18 +513,329 @@ export function doesMediaBelongToUser(media: any, user: any): boolean {
   return false;
 }
 
-export async function deleteMediaFromFirestore(db: Firestore, item: any): Promise<{ col: string; docId: string }> {
+function normalizeMediaUrlKey(rawUrl: unknown): string {
+  if (typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+  return trimmed.split('?')[0].split('#')[0].trim();
+}
+
+export function extractSupabaseObjectKeys(item: any): string[] {
+  if (!item || typeof item !== 'object') return [];
+  const candidateFields = [
+    item.imageUrl,
+    item.imageURL,
+    item.mediaUrl,
+    item.mediaURL,
+    item.videoUrl,
+    item.videoURL,
+    item.thumbnailUrl,
+    item.thumbnailURL,
+    item.photoUrl,
+    item.photoURL,
+    item.reelUrl,
+    item.reelURL,
+    item.storyVideoUrl,
+    item.postUrl,
+    item.postURL,
+    item.fileUrl,
+    item.fileURL,
+    item.thumbUrl,
+    item.coverUrl,
+    item.url,
+    item.contentUrl,
+    item.storageUrl,
+    item.storagePath,
+    item.objectKey,
+    item.filePath,
+  ];
+
+  const keys = new Set<string>();
+  for (const raw of candidateFields) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed) continue;
+
+    const bucketMarkerMatch = trimmed.match(/\/yousnap\/(.+)$/i);
+    if (!bucketMarkerMatch?.[1]) continue;
+
+    let objectKey = bucketMarkerMatch[1].split('?')[0].split('#')[0].trim();
+    try {
+      objectKey = decodeURIComponent(objectKey);
+    } catch {
+      // Keep raw string if not URI-encoded
+    }
+
+    objectKey = objectKey.replace(/^\/+/, '').trim();
+    if (!objectKey || objectKey.includes('..') || objectKey.includes('\\')) continue;
+    keys.add(objectKey);
+  }
+
+  return Array.from(keys);
+}
+
+const COLLECTION_DEDUPE_PRIORITY: Record<string, number> = {
+  posts: 1,
+  reels: 2,
+  stories: 3,
+  videos: 4,
+  live_uploads: 5,
+};
+
+export function deduplicateMediaItems<T extends Record<string, any>>(items: T[]): T[] {
+  const ordered = [...items].sort((a, b) => {
+    const pa = COLLECTION_DEDUPE_PRIORITY[String(a.sourceCollection || '')] ?? 99;
+    const pb = COLLECTION_DEDUPE_PRIORITY[String(b.sourceCollection || '')] ?? 99;
+    return pa - pb;
+  });
+
+  const result: T[] = [];
+  const seenExactKeys = new Set<string>();
+  const reelOrVideoIndexById = new Map<string, number>();
+  const reelOrVideoIndexByUrl = new Map<string, number>();
+
+  for (const item of ordered) {
+    const col = String(item.sourceCollection || 'videos');
+    const docId = String(item.docId || item.id || '');
+    const exactKey = `${col}:${docId}`;
+    if (seenExactKeys.has(exactKey)) continue;
+    seenExactKeys.add(exactKey);
+
+    const isReelOrVideo = col === 'reels' || col === 'videos';
+    const candidateIds = [docId, item.videoId, item.reelId]
+      .filter(Boolean)
+      .map((v) => String(v));
+    const candidateUrls = [
+      normalizeMediaUrlKey(item.videoURL),
+      normalizeMediaUrlKey(item.videoUrl),
+      normalizeMediaUrlKey(item.mediaUrl),
+      normalizeMediaUrlKey(item.mediaURL),
+      normalizeMediaUrlKey(item.imageUrl),
+      normalizeMediaUrlKey(item.imageURL),
+    ].filter(Boolean);
+
+    if (isReelOrVideo) {
+      let existingIdx: number | undefined;
+      for (const idVal of candidateIds) {
+        if (reelOrVideoIndexById.has(idVal)) {
+          existingIdx = reelOrVideoIndexById.get(idVal);
+          break;
+        }
+      }
+      if (existingIdx === undefined) {
+        for (const urlVal of candidateUrls) {
+          if (reelOrVideoIndexByUrl.has(urlVal)) {
+            existingIdx = reelOrVideoIndexByUrl.get(urlVal);
+            break;
+          }
+        }
+      }
+
+      if (existingIdx !== undefined) {
+        const existingItem: any = result[existingIdx];
+        const prevMatches = Array.isArray(existingItem.matchingDocs)
+          ? existingItem.matchingDocs
+          : [{ col: existingItem.sourceCollection || 'reels', docId: existingItem.docId }];
+        const mergedMatches = [...prevMatches];
+        if (!mergedMatches.some((m: any) => m.col === col && m.docId === docId)) {
+          mergedMatches.push({ col, docId });
+        }
+        const mergedStorageKeys = Array.from(
+          new Set([
+            ...extractSupabaseObjectKeys(existingItem),
+            ...extractSupabaseObjectKeys(item),
+          ])
+        );
+        result[existingIdx] = {
+          ...existingItem,
+          matchingDocs: mergedMatches,
+          extraStorageKeys: mergedStorageKeys,
+        };
+        continue;
+      }
+    }
+
+    const nextIdx = result.length;
+    const baseEntry: any = {
+      ...item,
+      matchingDocs: [{ col, docId }],
+      extraStorageKeys: extractSupabaseObjectKeys(item),
+    };
+    result.push(baseEntry);
+
+    if (isReelOrVideo) {
+      candidateIds.forEach((idVal) => {
+        if (!reelOrVideoIndexById.has(idVal)) reelOrVideoIndexById.set(idVal, nextIdx);
+      });
+      candidateUrls.forEach((urlVal) => {
+        if (!reelOrVideoIndexByUrl.has(urlVal)) reelOrVideoIndexByUrl.set(urlVal, nextIdx);
+      });
+    }
+  }
+
+  return result;
+}
+
+async function deleteSupabaseObjects(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+
+  const currentUser = auth.currentUser;
+  if (!currentUser) {
+    throw new Error('Admin session missing — sign in again to delete files from Supabase Storage.');
+  }
+
+  const idToken = await currentUser.getIdToken();
+  let response: Response;
+  try {
+    response = await fetch('/api/storage/delete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({
+        bucket: 'YouSnap',
+        keys,
+      }),
+    });
+  } catch (networkErr: any) {
+    throw new Error(
+      `Could not reach storage delete endpoint (/api/storage/delete): ${networkErr?.message || 'Network error'}`
+    );
+  }
+
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error(
+      `Storage delete endpoint unavailable (HTTP ${response.status}). Ensure the server backend and Supabase credentials are active.`
+    );
+  }
+
+  const payload = (await response.json().catch(() => ({}))) as { error?: string; deletedKeys?: string[] };
+  if (!response.ok) {
+    throw new Error(payload.error || `Supabase Storage delete failed (HTTP ${response.status}).`);
+  }
+}
+
+export async function deleteMediaFromFirestore(
+  db: Firestore,
+  item: any
+): Promise<{
+  col: string;
+  docId: string;
+  deletedDocs: Array<{ col: string; docId: string }>;
+  deletedStorageKeys: string[];
+}> {
   const col = item?.sourceCollection || 'videos';
   const docId = item?.docId || item?.id || item?.videoId || item?.uploadId;
   if (!docId) {
     throw new Error('Missing document ID for media deletion');
   }
 
-  // 1. Delete the actual document from its exact Firestore collection
-  await deleteDoc(doc(db, col, docId));
+  // 1. Collect all matching Firestore docs (primary + deduplicated reels/videos siblings) & Supabase keys
+  const targetDocsMap = new Map<string, { col: string; docId: string }>();
+  const addTarget = (c: string, id: string) => {
+    if (c && id) targetDocsMap.set(`${c}:${id}`, { col: c, docId: id });
+  };
+  addTarget(col, String(docId));
 
-  // 2. Safely decrement uploader counters on /users/{uid} if present
-  const ownerId = item?.userId || item?.uid || item?.uploaderId || item?.authorId;
+  if (Array.isArray(item?.matchingDocs)) {
+    item.matchingDocs.forEach((m: any) => {
+      if (m?.col && m?.docId) addTarget(String(m.col), String(m.docId));
+    });
+  }
+
+  const collectedStorageKeys = new Set<string>([
+    ...extractSupabaseObjectKeys(item),
+    ...(Array.isArray(item?.extraStorageKeys) ? item.extraStorageKeys : []),
+  ]);
+
+  // Ensure any matching sibling document between /reels and /videos is also found & deleted
+  if (col === 'reels' || col === 'videos') {
+    const siblingCol = col === 'reels' ? 'videos' : 'reels';
+    const itemUrls = new Set(
+      [
+        normalizeMediaUrlKey(item?.videoURL),
+        normalizeMediaUrlKey(item?.videoUrl),
+        normalizeMediaUrlKey(item?.mediaUrl),
+        normalizeMediaUrlKey(item?.mediaURL),
+        normalizeMediaUrlKey(item?.imageUrl),
+        normalizeMediaUrlKey(item?.imageURL),
+        normalizeMediaUrlKey(item?.thumbnailURL),
+        normalizeMediaUrlKey(item?.thumbnailUrl),
+      ].filter(Boolean)
+    );
+
+    try {
+      const siblingDirect = await getDoc(doc(db, siblingCol, String(docId)));
+      if (siblingDirect.exists()) {
+        addTarget(siblingCol, siblingDirect.id);
+        extractSupabaseObjectKeys(siblingDirect.data()).forEach((k) => collectedStorageKeys.add(k));
+      }
+    } catch {
+      // Ignore if sibling collection rules prevent read
+    }
+
+    if (itemUrls.size > 0 || item?.videoId) {
+      try {
+        const siblingSnap = await getDocs(collection(db, siblingCol));
+        siblingSnap.docs.forEach((d) => {
+          const sData = d.data() || {};
+          const matchesId = d.id === String(docId) || (item?.videoId && sData.videoId === item.videoId);
+          const siblingUrls = [
+            normalizeMediaUrlKey(sData.videoURL),
+            normalizeMediaUrlKey(sData.videoUrl),
+            normalizeMediaUrlKey(sData.mediaUrl),
+            normalizeMediaUrlKey(sData.mediaURL),
+            normalizeMediaUrlKey(sData.imageUrl),
+            normalizeMediaUrlKey(sData.imageURL),
+            normalizeMediaUrlKey(sData.thumbnailURL),
+            normalizeMediaUrlKey(sData.thumbnailUrl),
+          ].filter(Boolean);
+          const matchesUrl = siblingUrls.some((u) => itemUrls.has(u));
+
+          if (matchesId || matchesUrl) {
+            addTarget(siblingCol, d.id);
+            extractSupabaseObjectKeys(sData).forEach((k) => collectedStorageKeys.add(k));
+          }
+        });
+      } catch {
+        // Ignore if sibling collection rules prevent read
+      }
+    }
+  }
+
+  // 2. Delete all matching Firestore documents
+  const deletedDocs: Array<{ col: string; docId: string }> = [];
+  for (const target of targetDocsMap.values()) {
+    try {
+      await deleteDoc(doc(db, target.col, target.docId));
+      deletedDocs.push(target);
+    } catch (firestoreErr: any) {
+      throw new Error(
+        `Firestore delete failed (${target.col}/${target.docId}): ${
+          firestoreErr?.message || 'Permission denied — check Firestore Rules.'
+        }`
+      );
+    }
+  }
+
+  // 3. Delete associated files from Supabase Storage (YouSnap bucket)
+  const storageKeys = Array.from(collectedStorageKeys);
+  if (storageKeys.length > 0) {
+    try {
+      await deleteSupabaseObjects(storageKeys);
+    } catch (storageErr: any) {
+      throw new Error(
+        `Deleted from Firestore, but Supabase Storage (YouSnap) delete failed: ${
+          storageErr?.message || 'Unknown storage error'
+        }`
+      );
+    }
+  }
+
+  // 4. Safely decrement uploader counters on /users/{uid} if present
+  const ownerId = item?.userId || item?.uid || item?.uploaderId || item?.authorId || item?.ownerId;
   if (ownerId) {
     try {
       const userRef = doc(db, 'users', String(ownerId));
@@ -549,7 +862,7 @@ export async function deleteMediaFromFirestore(db: Firestore, item: any): Promis
       // ignore optional counter sync errors
     }
 
-    // 3. Optional notification to uploader (only if /notifications rule allows admin write)
+    // 5. Optional notification to uploader (only if /notifications rule allows admin write)
     try {
       await addDoc(collection(db, 'notifications'), {
         userId: String(ownerId),
@@ -564,7 +877,7 @@ export async function deleteMediaFromFirestore(db: Firestore, item: any): Promis
     }
   }
 
-  return { col, docId };
+  return { col, docId: String(docId), deletedDocs, deletedStorageKeys: storageKeys };
 }
 
 // Restrict (Suspend / Ban) a specific Photo or Video in Firestore.
